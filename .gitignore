@@ -1,2 +1,4 @@
 build/
+# uf2 ignored except the GP2040-CE restore image
 *.uf2
+!gp2040ce_restore.uf2
