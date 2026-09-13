@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FightingBox MIDI — Live Monitor</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel2: #1c2230;
+    --line: #2a3140;
+    --dim: #6b7686;
+    --text: #e6edf3;
+    --on: #3fb950;
+    --latch: #d29922;
+    --accent: #58a6ff;
+    --drum: #f778ba;
+    --note: #a371f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 22px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 18px; margin: 0 0 2px; letter-spacing: .2px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  #status {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; letter-spacing: .4px;
+    background: #2a1215; color: #f85149; border: 1px solid #61282d;
+  }
+  #status.ok { background: #0f2417; color: var(--on); border-color: #1f5031; }
+
+  .wrap { max-width: 1080px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--dim); margin: 0 0 12px; font-weight: 600;
+  }
+  .card h2 .note { text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .row > .card { flex: 1; min-width: 260px; margin-bottom: 0; }
+
+  .mode-now { font-size: 26px; font-weight: 650; letter-spacing: -.3px; }
+  .mode-sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 3px 0; font-size: 13px; }
+  td:first-child { color: var(--dim); width: 46%; }
+  td:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .rec.idle { color: var(--dim); }
+  .rec.active { color: var(--latch); }
+
+  /* ---------- device visualization ---------- */
+  #device { padding: 18px 16px 14px; }
+  .board {
+    position: relative;
+    width: 780px; height: 396px;
+    margin: 0 auto;
+    background: linear-gradient(160deg, #1b2230, #141922);
+    border: 1px solid var(--line); border-radius: 16px;
+  }
+  .board .brand {
+    position: absolute; left: 30px; bottom: 24px;
+    font-size: 19px; font-weight: 800; letter-spacing: 1.5px;
+    color: #232b3a;
+  }
+
+  .key {
+    position: absolute;
+    width: 72px; height: 72px; border-radius: 9px;
+    background: var(--panel2);
+    border: 2px solid var(--line);
+    border-bottom-width: 4px;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center; padding: 3px;
+    transition: all .1s;
+  }
+  .key .name { font-size: 10px; font-weight: 700; letter-spacing: .3px; color: var(--dim); }
+  .key .fn   { font-size: 11px; font-weight: 650; line-height: 1.15; margin-top: 2px; }
+  .key .sub  { font-size: 9px; color: var(--dim); margin-top: 1px; }
+
+  .key.wide { width: 124px; }
+
+  .key.small {
+    width: 54px; height: 54px; border-radius: 50%; border-bottom-width: 3px;
+  }
+  .key.small .name { font-size: 9px; }
+  .key.small .fn   { font-size: 9px; line-height: 1.1; }
+  .key.small .sub  { display: none; }
+
+  .key.act    { border-color: var(--on);     background: #0f2417; }
+  .key.act .fn{ color: var(--on); }
+  .key.lat    { border-color: var(--latch);  background: #2b2008; }
+  .key.lat .fn{ color: var(--latch); }
+  .key.saved  { border-color: var(--accent); background: #0d1f33; }
+  .key.saved .fn { color: var(--accent); }
+  .key.drum   { border-color: var(--drum);   background: #2a0f20; }
+  .key.drum .fn  { color: var(--drum); }
+  /* physically held down right now - overrides other colouring */
+  .key.down {
+    background: #f0f6fc !important;
+    border-color: #ffffff !important;
+    transform: translateY(2px);
+    border-bottom-width: 2px;
+    box-shadow: 0 0 16px rgba(240,246,252,.45);
+  }
+  .key.down .name, .key.down .fn, .key.down .sub { color: #0d1117 !important; }
+
+  .key.dead {
+    opacity: .3;
+    border-style: dashed;
+  }
+  .key.dead .fn { color: var(--dim); }
+
+  .key.tone   { border-color: #3d2a63; }
+  .key.tone .fn  { color: var(--note); }
+
+  .hint { color: var(--dim); font-size: 12px; margin-top: 12px; line-height: 1.6; }
+  .hint b { color: var(--text); font-weight: 600; }
+  .legend-dots { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--dim); margin-top: 12px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FightingBox MIDI</h1>
+<div class="sub">Live controller monitor · <span id="status">waiting for device…</span></div>
+
+<div class="row" style="margin-bottom:14px">
+  <div class="card">
+    <h2>Current Mode</h2>
+    <div class="mode-now" id="modeName">—</div>
+    <div class="mode-sub" id="modeDesc">connect the controller</div>
+  </div>
+  <div class="card">
+    <h2>Settings</h2>
+    <table>
+      <tr><td>Octave</td><td id="oct">0</td></tr>
+      <tr><td>Transpose</td><td id="tr">0</td></tr>
+      <tr><td id="lbl4">Scale</td><td id="scale">—</td></tr>
+      <tr><td>Record</td><td class="rec idle" id="rec">idle</td></tr>
+      <tr><td>Loop</td><td id="loopSt">—</td></tr>
+      <tr><td>Custom bank</td><td id="cbank">—</td></tr>
+      <tr><td>Velocity / Latch</td><td id="velLatch">100 · off</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="card" id="device">
+  <h2>Device <span class="note">— every key labelled with what it does right now</span></h2>
+  <div class="board" id="board">
+    <div class="brand">FIGHTINGBOX</div>
+  </div>
+
+  <div class="legend-dots">
+    <span><i class="dot" style="background:var(--on)"></i>held / active</span>
+    <span><i class="dot" style="background:var(--latch)"></i>latched</span>
+    <span><i class="dot" style="background:var(--accent)"></i>recorded override</span>
+    <span><i class="dot" style="background:var(--drum)"></i>drum voice</span>
+    <span><i class="dot" style="background:var(--note)"></i>pitched note</span>
+    <span><i class="dot" style="background:#f0f6fc"></i>pressed now</span>
+  </div>
+  <div class="hint" id="deviceHint"></div>
+</div>
+
+</div>
+
+<script>
+const MODES = [
+  { name: "Chromatic",   desc: "8 consecutive semitones from C4 · channel 1" },
+  { name: "Scale",       desc: "8 scale degrees, no wrong notes · channel 1" },
+  { name: "Chord",       desc: "keys pick the root, modifiers pick the quality · channel 1" },
+  { name: "Custom",      desc: "editable banks — each key holds its own sound" },
+  { name: "Drum (GM)",   desc: "real percussion · channel 10" },
+];
+const SCALES = ["Major","Minor","Maj Pentatonic","Min Pentatonic","Blues","Dorian","Mixolydian","Harmonic Minor"];
+const KITS   = ["Standard","Room","Power","Electronic","TR-808","Jazz","Brush","Orchestra","SFX"];
+const BANKS  = ["Core","Alt","Latin"];
+const PADS   = ["1P","2P","3P","4P","1K","2K","3K","4K"];
+const DRUMS  = [
+  ["Kick","Snare","Cl Hat","Op Hat","Lo Tom","Mid Tom","Crash","Ride"],
+  ["Stick","Clap","Pd Hat","Fl Tom","Hi Tom","China","Splash","Bell"],
+  ["Cowbell","Vibra","Hi Bongo","Lo Bongo","Mt Conga","Op Conga","Lo Conga","Maracas"],
+];
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const SCALE_STEPS = [
+  [0,2,4,5,7,9,11],[0,2,3,5,7,8,10],[0,2,4,7,9],[0,3,5,7,10],
+  [0,3,5,6,7,10],[0,2,3,5,7,9,10],[0,2,4,5,7,9,10],[0,2,3,5,7,8,11],
+];
+const CBANKS = ["Beat","Bass","Stabs","Perc"];
+const CSLOTS = [
+  ["Kick","Snare","Cl Hat","Op Hat","Clap","Stick","Ride","Crash"],
+  ["C2","D#2","F2","G2","A#2","C3","D#3","F3"],
+  ["Cm","Dm","D#","Fm","Gm","G#","A#","Cm+"],
+  ["Tamb","Cowbell","Maraca","Guiro","Op Cga","Lo Cga","Mt Cga","Claves"],
+];
+const DEG = ["1st","2nd","3rd","4th","5th","6th","7th","8th"];
+
+const S = { mode:0, scale:0, types:0, exts:0, typeLatch:0, extLatch:0,
+            oct:0, tr:0, kit:0, bank:0, rec:0, overrides:0,
+            pMain:0, pDpad:0, pFn:0,
+            loop:0, loopMute:0, latch:0, vel:100, shift:0, cbank:0 };
+
+const $ = id => document.getElementById(id);
+const chord  = () => S.mode === 2;
+const drumGM = () => S.mode === 4;
+const custom = () => S.mode === 3;
+
+function noteName(midi) {
+  return NOTE_NAMES[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
+}
+function rootFor(i) {
+  const steps = SCALE_STEPS[S.scale] || SCALE_STEPS[0];
+  const oct = Math.floor(i / steps.length), idx = i % steps.length;
+  return 60 + S.oct * 12 + S.tr + steps[idx] + 12 * oct;
+}
+
+// Physical layout, traced from the FightingBox photo:
+//  - small round function buttons across the top (Turbo .. R3)
+//  - Left / Down / Right descending diagonally at upper-left
+//  - wide UP thumb key below them
+//  - punches (1P 2P 3P 4P) and kicks (1K 2K 3K 4K) in two descending rows
+// x/y are top-left pixel offsets inside .board
+const LAYOUT = {
+  // small round function buttons across the top, left -> right
+  TURBO:  { x: 300, y: 16,  small: true },
+  HOME:   { x: 372, y: 26,  small: true },
+  SELECT: { x: 444, y: 40,  small: true },
+  START:  { x: 516, y: 50,  small: true },
+  L3:     { x: 588, y: 64,  small: true },
+  R3:     { x: 660, y: 74,  small: true },
+
+  // directional cluster: Left / Down / Right stepping down-right
+  LEFT:   { x: 120, y: 96  },
+  DOWN:   { x: 202, y: 132 },
+  RIGHT:  { x: 284, y: 168 },
+  UP:     { x: 150, y: 286, wide: true },
+
+  // punches (upper row) and kicks (lower row), each stepping down-right
+  "1P": { x: 392, y: 140 }, "2P": { x: 474, y: 158 },
+  "3P": { x: 556, y: 176 }, "4P": { x: 638, y: 194 },
+  "1K": { x: 372, y: 230 }, "2K": { x: 454, y: 248 },
+  "3K": { x: 536, y: 266 }, "4K": { x: 618, y: 284 },
+};
+
+// Which bit of which press-mask each physical key corresponds to.
+const PRESS_BIT = {
+  "1P":["pMain",0], "2P":["pMain",1], "3P":["pMain",2], "4P":["pMain",3],
+  "1K":["pMain",4], "2K":["pMain",5], "3K":["pMain",6], "4K":["pMain",7],
+  UP:["pDpad",0], DOWN:["pDpad",1], LEFT:["pDpad",2], RIGHT:["pDpad",3],
+  L3:["pFn",0], R3:["pFn",1], TURBO:["pFn",2], HOME:["pFn",3],
+  START:["pFn",4], SELECT:["pFn",5],
+};
+function isDown(id) {
+  const b = PRESS_BIT[id];
+  return b ? !!(S[b[0]] & (1 << b[1])) : false;
+}
+
+function placeKey(id, name, fn, sub, cls) {
+  const L = LAYOUT[id];
+  if (!L) return "";
+  const extra = (L.small ? " small" : "") + (L.wide ? " wide" : "")
+              + (isDown(id) ? " down" : "");
+  return `<div class="key${extra} ${cls||""}" style="left:${L.x}px;top:${L.y}px">
+    <div class="name">${name}</div>
+    <div class="fn">${fn}</div>
+    ${sub ? `<div class="sub">${sub}</div>` : ""}
+  </div>`;
+}
+
+// ---- directional keys: chord types, pitch, or drum banks ----
+function dirKeys() {
+  const TYPE = { UP:[0,"Major"], DOWN:[1,"Minor"], LEFT:[2,"Sus"], RIGHT:[3,"Dim"] };
+  return ["UP","DOWN","LEFT","RIGHT"].map(dir => {
+    if (S.shift) {   // Select held -> shift layer
+      const m = { UP:["Vel +", String(S.vel)], DOWN:["Vel -", String(S.vel)],
+                  LEFT:[S.loopMute ? "Unmute" : "Mute loop", ""],
+                  RIGHT:["Clear loop", ""] }[dir];
+      return placeKey(dir, dir, m[0], m[1], "act");
+    }
+    if (custom()) {
+      const m = { UP:["Octave +", (S.oct>0?"+":"")+S.oct],
+                  DOWN:["Octave -", (S.oct>0?"+":"")+S.oct],
+                  LEFT:["Bank -", CBANKS[S.cbank]],
+                  RIGHT:["Bank +", CBANKS[S.cbank]] }[dir];
+      return placeKey(dir, dir, m[0], m[1], "");
+    }
+    if (chord()) {
+      const [bit, n] = TYPE[dir];
+      const on  = S.types     & (1 << bit);
+      const lat = S.typeLatch & (1 << bit);
+      return placeKey(dir, dir, n, lat ? "latched" : (on ? "held" : "tap/hold"),
+                      lat ? "lat" : (on ? "act" : ""));
+    }
+    if (drumGM()) {
+      const m = { UP:["Bank +", BANKS[S.bank]], DOWN:["Bank -", BANKS[S.bank]],
+                  LEFT:["Kit -", KITS[S.kit]],  RIGHT:["Kit +", KITS[S.kit]] }[dir];
+      return placeKey(dir, dir, m[0], m[1], "");
+    }
+    const o = (S.oct>0?"+":"") + S.oct, t = (S.tr>0?"+":"") + S.tr;
+    const m = { UP:["Octave +", o], DOWN:["Octave -", o],
+                LEFT:["Semi -", t], RIGHT:["Semi +", t] }[dir];
+    return placeKey(dir, dir, m[0], m[1], "");
+  }).join("");
+}
+
+// ---- the 8 punch/kick keys ----
+function mainKeys() {
+  return PADS.map((p, i) => {
+    if (S.overrides & (1 << i)) return placeKey(p, p, "SAVED", "any mode", "saved");
+    if (S.rec === 1) return placeKey(p, p, "pick", "as source", "lat");
+    if (S.rec === 2) return placeKey(p, p, "pick", "as target", "lat");
+    if (drumGM()) return placeKey(p, p, (DRUMS[S.bank]||DRUMS[0])[i], "ch10", "drum");
+    if (custom()) {
+      const nm = (CSLOTS[S.cbank]||CSLOTS[0])[i];
+      const perc = S.cbank === 0 || S.cbank === 3;
+      return placeKey(p, p, nm, CBANKS[S.cbank], perc ? "drum" : "tone");
+    }
+    if (S.mode === 2) return placeKey(p, p, noteName(rootFor(i)), DEG[i] + " root", "tone");
+    if (S.mode === 1) return placeKey(p, p, noteName(rootFor(i)), DEG[i], "tone");
+    return placeKey(p, p, noteName(60 + S.oct*12 + S.tr + i), "semitone", "tone");
+  }).join("");
+}
+
+// ---- the 6 small function buttons ----
+function fnKeys() {
+  const ext = (bit, label, id) => {
+    const on  = S.exts     & (1 << bit);
+    const lat = S.extLatch & (1 << bit);
+    return placeKey(id, id, "+" + label, "", lat ? "lat" : (on ? "act" : ""));
+  };
+  if (chord()) {
+    return [
+      ext(0, "6th", "L3"),
+      ext(1, "m7",  "R3"),
+      placeKey("TURBO", "TURBO", "not wired", "", "dead"),
+      ext(3, "9th", "HOME"),   // M7 has no key: the Turbo switch is dead
+      placeKey("START",  "START",  S.latch ? "LATCH on" : "Exit", "", S.latch ? "lat" : ""),
+      placeKey("SELECT", "SELECT", S.shift ? "SHIFT" : "Panic", "", S.shift ? "act" : ""),
+    ].join("");
+  }
+  const LOOPTXT = ["Loop rec","Close loop","Overdub","To play"];
+  const loopCls = S.loop ? ((S.loop===1||S.loop===3) ? "lat" : "act") : "";
+  return [
+    placeKey("L3",     "L3",     LOOPTXT[S.loop] || "Loop", "", loopCls),
+    placeKey("R3",     "R3",     drumGM() ? "To melody" : "Drum GM", "", drumGM() ? "act" : ""),
+    placeKey("TURBO",  "TURBO",  "not wired", "", "dead"),
+    placeKey("HOME",   "HOME",   S.rec ? "RECORDING" : (S.mode===1 ? "Scale+ / Rec" : "Hold: Record"),
+             "", S.rec ? "lat" : ""),
+    placeKey("START",  "START",  S.latch ? "LATCH on" : "Mode", "", S.latch ? "lat" : ""),
+    placeKey("SELECT", "SELECT", S.shift ? "SHIFT" : "Panic", "", S.shift ? "act" : ""),
+  ].join("");
+}
+
+function renderBoard() {
+  $("board").innerHTML =
+    '<div class="brand">FIGHTINGBOX</div>' + dirKeys() + mainKeys() + fnKeys();
+}
+
+function render() {
+  const m = MODES[S.mode] || MODES[0];
+  $("modeName").textContent = m.name;
+  $("modeDesc").textContent = m.desc;
+  $("oct").textContent = (S.oct>0?"+":"") + S.oct;
+  $("tr").textContent  = (S.tr>0?"+":"") + S.tr;
+  $("lbl4").textContent = drumGM() ? "Kit / Bank" : "Scale";
+  $("scale").textContent = drumGM()
+    ? `${KITS[S.kit]||"?"} · ${BANKS[S.bank]||"?"}`
+    : (SCALES[S.scale] || "—");
+
+  const r = $("rec");
+  r.textContent = ["idle","▶ press SOURCE key","▶ press TARGET key"][S.rec] || "idle";
+  r.className = "rec " + (S.rec ? "active" : "idle");
+
+  const LOOPNAME = ["idle","● recording","▶ playing","● overdub"];
+  $("loopSt").textContent = (LOOPNAME[S.loop]||"idle") + (S.loopMute ? " (muted)" : "");
+  $("cbank").textContent = custom() ? CBANKS[S.cbank] : "—";
+  $("velLatch").textContent = S.vel + " · " + (S.latch ? "LATCH on" : "off");
+  renderBoard();
+
+  let h;
+  if (S.rec === 1)      h = "<b>Record armed.</b> Press the key whose sound you want to copy.";
+  else if (S.rec === 2) h = "<b>Now press the key to copy it onto.</b> It keeps that exact sound in every mode.";
+  else if (chord())     h = (S.types
+        ? "A chord type is active — that shape plays on every root."
+        : "No type active — each key plays the <b>diatonic chord</b> for its scale degree.")
+        + " Modifiers: <b>hold</b> = momentary, <b>tap</b> = latch. "
+        + "<b>Hold Turbo 0.6s</b> to record (a tap is the M7 extension), <b>hold Home 0.6s</b> to wipe saved keys.";
+  else if (custom())    h = "<b>Custom banks.</b> Left/Right swap bank ("
+        + CBANKS.join(" · ") + "). Hold <b>Home</b> to record: press a source key, "
+        + "then a key in this bank to overwrite that slot. Each bank keeps its own edits.";
+  else if (drumGM())    h = "Percussion on channel 10 — a GM drum instrument maps these to real kit sounds.";
+  else                  h = "D-pad: <b>tap</b> shifts permanently, <b>hold</b> shifts only while held. "
+                          + "Press <b>Start</b> to cycle Chromatic → Scale → Chord.";
+  $("deviceHint").innerHTML = h;
+}
+
+function onCC(cc, val) {
+  switch (cc) {
+    case 20: S.mode=val; break;      case 21: S.scale=val; break;
+    case 22: S.types=val; break;     case 23: S.exts=val; break;
+    case 24: S.oct=val-64; break;    case 25: S.tr=val-64; break;
+    case 26: S.kit=val; break;       case 27: S.bank=val; break;
+    case 28: S.rec=val; break;
+    // overrides arrive as two 4-bit halves (CC values are only 7-bit)
+    case 29: S.overrides = (S.overrides & 0xF0) | (val & 0x0F); break;
+    case 36: S.overrides = (S.overrides & 0x0F) | ((val & 0x0F) << 4); break;
+    case 30: S.typeLatch=val; break; case 31: S.extLatch=val; break;
+    // live pressed keys
+    case 32: S.pMain = (S.pMain & 0xF0) | (val & 0x0F); break;
+    case 33: S.pMain = (S.pMain & 0x0F) | ((val & 0x0F) << 4); break;
+    case 34: S.pDpad = val; break;
+    case 35: S.pFn   = val; break;
+    case 37: S.loop = val; break;       case 38: S.loopMute = val; break;
+    case 39: S.latch = val; break;      case 40: S.vel = val; break;
+    case 41: S.shift = val; break;   case 42: S.cbank = val; break;
+    default: return;
+  }
+  render();
+}
+
+function connect(access) {
+  let found = false;
+  for (const input of access.inputs.values()) {
+    input.onmidimessage = e => {
+      const [st, d1, d2] = e.data;
+      if (st === 0xBF) onCC(d1, d2);   // CC on channel 16 = state feed
+    };
+    if (/pico|fighting/i.test(input.name || "")) found = true;
+  }
+  const s = $("status");
+  s.textContent = found ? "connected" : "listening (no device named Pico yet)";
+  s.className = found ? "ok" : "";
+}
+
+if (navigator.requestMIDIAccess) {
+  navigator.requestMIDIAccess({ sysex: false }).then(access => {
+    connect(access);
+    access.onstatechange = () => connect(access);
+  }).catch(err => { $("status").textContent = "MIDI access denied: " + err; });
+} else {
+  $("status").textContent = "no Web MIDI in this browser — use Vivaldi/Chrome/Edge";
+}
+
+render();
+</script>
+</body>
+</html>
