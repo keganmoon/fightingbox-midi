@@ -101,6 +101,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <EEPROM.h>   // RP2040: a 4 KB flash sector emulating EEPROM
 
 // Triad (3) + up to 4 stacked extensions + headroom.
 // Must be a #define up here: Arduino auto-inserts function prototypes
@@ -349,20 +350,26 @@ const uint8_t CC_LATCH     = 39; // 0/1 latch (sustain) mode
 const uint8_t CC_VELOCITY  = 40; // current velocity
 const uint8_t CC_SHIFT     = 41; // 0/1 Select held (shift layer live)
 const uint8_t CC_CUSTBANK  = 42; // active custom bank index
+const uint8_t CC_SAVED     = 43; // 1 = settings committed to flash
 
+void markSettingsDirty();   // defined with the persistence code below
 bool stateDirty = true;
 unsigned long lastStateSend = 0;
 const unsigned long STATE_HEARTBEAT_MS = 1000; // resend periodically so a
                                                // monitor opened late syncs up
 
-void markStateDirty() { stateDirty = true; }
+void markStateDirty() { stateDirty = true; markSettingsDirty(); }
 
 bool inChordMode()   { return currentMode == MODE_CHORD; }
 bool drumGM()        { return currentMode == MODE_DRUM_GM; }
 bool inCustom()      { return currentMode == MODE_CUSTOM; }
+// Must list every mode in MELODIC_CYCLE. Omitting one traps you in it:
+// Start only advances melodicIndex when this returns true, so a missing
+// mode makes switchMode() re-select the mode you are already in.
 bool inMelodicMode() { return currentMode == MODE_CHROMATIC ||
                               currentMode == MODE_SCALE ||
-                              currentMode == MODE_CHORD; }
+                              currentMode == MODE_CHORD ||
+                              currentMode == MODE_CUSTOM; }
 
 // ---- Recorded overrides (store the whole chord + channel) ----
 bool    overrideActive[8]                 = {false};
@@ -732,12 +739,226 @@ void sendState() {
   lastStateSend = millis();
 }
 
+// ---- Persistence -------------------------------------------------------
+// The RP2040 has no real EEPROM; the core emulates one in a flash sector.
+// Writing flash stalls the CPU for milliseconds, so we never write from the
+// hot path: changes set a dirty flag and are committed once the player has
+// been idle for a moment. That keeps note timing clean and avoids burning
+// flash cycles on every knob nudge.
+const uint32_t SAVE_MAGIC   = 0x46424D34;  // "FBM4"
+const uint16_t SAVE_ADDR    = 0;
+const unsigned long SAVE_DEBOUNCE_MS = 2500;
+
+struct Persist {
+  uint32_t magic;
+  uint8_t  scaleIndex, kitIndex, currentBank, customBankIndex;
+  int8_t   octaveShift, transposeShift;
+  uint8_t  velocity, mode;
+  Slot     banks[NUM_CUSTOM_BANKS][8];
+  bool     ovActive[8];
+  uint8_t  ovNotes[8][MAX_CHORD_NOTES];
+  uint8_t  ovCount[8], ovChannel[8];
+};
+
+bool settingsDirty = false;
+unsigned long lastChangeAt = 0;
+unsigned long savedFlashAt = 0;   // brief on-screen 'saved' confirmation
+
+void markSettingsDirty() { settingsDirty = true; lastChangeAt = millis(); }
+
+void saveSettings() {
+  Persist p;
+  p.magic = SAVE_MAGIC;
+  p.scaleIndex = scaleIndex;   p.kitIndex = kitIndex;
+  p.currentBank = currentBank; p.customBankIndex = customBankIndex;
+  p.octaveShift = octaveShift; p.transposeShift = transposeShift;
+  p.velocity = velocity;
+  p.mode = (uint8_t)currentMode;
+  memcpy(p.banks, customBank, sizeof(customBank));
+  for (uint8_t i = 0; i < 8; i++) {
+    p.ovActive[i]  = overrideActive[i];
+    p.ovCount[i]   = overrideCount[i];
+    p.ovChannel[i] = overrideChannel[i];
+    for (uint8_t n = 0; n < MAX_CHORD_NOTES; n++)
+      p.ovNotes[i][n] = (uint8_t)overrideNotes[i][n];
+  }
+  EEPROM.put(SAVE_ADDR, p);
+  EEPROM.commit();
+  settingsDirty = false;
+  savedFlashAt = millis();
+  MIDI.sendControlChange(CC_SAVED, 1, CHANNEL_STATE);
+}
+
+void loadSettings() {
+  Persist p;
+  EEPROM.get(SAVE_ADDR, p);
+  if (p.magic != SAVE_MAGIC) return;   // never saved, or layout changed
+  scaleIndex      = p.scaleIndex % NUM_SCALES;
+  kitIndex        = p.kitIndex % NUM_KITS;
+  currentBank     = p.currentBank % NUM_BANKS;
+  customBankIndex = p.customBankIndex % NUM_CUSTOM_BANKS;
+  octaveShift     = constrain(p.octaveShift, -4, 4);
+  transposeShift  = constrain(p.transposeShift, -12, 12);
+  velocity        = constrain(p.velocity, 1, 127);
+  if (p.mode <= (uint8_t)MODE_DRUM_GM) {
+    currentMode = (Mode)p.mode;
+    for (uint8_t i = 0; i < NUM_MELODIC; i++)
+      if (MELODIC_CYCLE[i] == currentMode) melodicIndex = i;
+  }
+  memcpy(customBank, p.banks, sizeof(customBank));
+  for (uint8_t i = 0; i < 8; i++) {
+    overrideActive[i]  = p.ovActive[i];
+    overrideCount[i]   = (p.ovCount[i] > MAX_CHORD_NOTES) ? 0 : p.ovCount[i];
+    overrideChannel[i] = p.ovChannel[i] ? p.ovChannel[i] : 1;
+    for (uint8_t n = 0; n < MAX_CHORD_NOTES; n++)
+      overrideNotes[i][n] = p.ovNotes[i][n];
+  }
+}
+
+// Reset every stored bank and setting back to the compiled-in defaults.
+void factoryReset() {
+  Persist blank; memset(&blank, 0, sizeof(blank));
+  EEPROM.put(SAVE_ADDR, blank);   // wipe the magic so load() ignores it
+  EEPROM.commit();
+}
+
 // The screen mirrors the monitor page: what mode you are in, the setting
 // that matters for that mode, and any modifier that is currently engaged.
+// Held-SELECT overlay: draws the actual board layout with each key
+// labelled by what it does in the current mode, the way GP2040-CE drew its
+// button map. Keys fill solid while physically held, so it doubles as an
+// input tester.
+//
+// 128x64 is tight: labels are at most 3 characters (6px per char at text
+// size 1), boxes are 15x13 for the main grid and the d-pad.
+
+void keyBox(int16_t x, int16_t y, int16_t w, int16_t h,
+            const char *label, bool pressed) {
+  if (pressed) {
+    display.fillRoundRect(x, y, w, h, 2, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+  } else {
+    display.drawRoundRect(x, y, w, h, 2, SSD1306_WHITE);
+    display.setTextColor(SSD1306_WHITE);
+  }
+  // centre the label in the box
+  int16_t len = strlen(label);
+  int16_t tx = x + (w - len * 6) / 2 + 1;
+  int16_t ty = y + (h - 7) / 2;
+  display.setCursor(tx, ty);
+  display.print(label);
+  display.setTextColor(SSD1306_WHITE);
+}
+
+// Short label for main key idx in the current mode.
+void mainKeyLabel(uint8_t idx, char *out) {
+  if (overrideActive[idx]) { strcpy(out, "SAV"); return; }
+
+  switch (currentMode) {
+    case MODE_CHORD: {
+      // roman-ish degree number is the most useful thing here
+      out[0] = '1' + idx; out[1] = 0;
+      return;
+    }
+    case MODE_CUSTOM: {
+      static const char *BEAT[8] = {"BD","SD","CH","OH","CP","RS","RD","CR"};
+      static const char *PERC[8] = {"TM","CB","MR","GR","CG","LC","MC","CL"};
+      if (customBankIndex == 0)      { strcpy(out, BEAT[idx]); return; }
+      else if (customBankIndex == 3) { strcpy(out, PERC[idx]); return; }
+      // pitched banks: show the note letter
+      const Slot &sl = customBank[customBankIndex][idx];
+      static const char *NN[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+      strcpy(out, NN[sl.n[0] % 12]);
+      return;
+    }
+    case MODE_DRUM_GM: {
+      static const char *D0[8] = {"BD","SD","CH","OH","LT","MT","CR","RD"};
+      static const char *D1[8] = {"RS","CP","PH","FT","HT","CN","SP","BL"};
+      static const char *D2[8] = {"CB","VS","HB","LB","MC","OC","LC","MR"};
+      const char **t = (currentBank == 0) ? D0 : (currentBank == 1) ? D1 : D2;
+      strcpy(out, t[idx]);
+      return;
+    }
+    default: {
+      // Chromatic / Scale: the note name
+      int notes[MAX_CHORD_NOTES]; uint8_t ch;
+      uint8_t n = effectiveNotes(idx, notes, ch);
+      static const char *NN[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+      if (n) strcpy(out, NN[notes[0] % 12]); else strcpy(out, "-");
+      return;
+    }
+  }
+}
+
+void drawHelp() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // --- header: mode + the setting that matters ---
+  display.setCursor(0, 0);
+  switch (currentMode) {
+    case MODE_CHROMATIC: display.print("CHROMA"); break;
+    case MODE_SCALE:     display.print("SCALE ");
+                         display.print(SCALE_NAMES[scaleIndex]); break;
+    case MODE_CHORD: {
+      display.print("CHORD ");
+      bool any = false;
+      for (uint8_t t = 0; t < NUM_CHORD_TYPES; t++)
+        if (typeActive(t)) { display.print(CHORD_TYPE_NAMES[t]); any = true; break; }
+      if (!any) display.print("diat");
+      for (uint8_t e = 0; e < NUM_EXTENSIONS; e++)
+        if (extActive(e)) { display.print("+"); display.print(EXT_NAMES[e]); }
+      break;
+    }
+    case MODE_CUSTOM:    display.print("CUSTOM ");
+                         display.print(CUSTOM_BANK_NAMES[customBankIndex]); break;
+    case MODE_DRUM_GM:   display.print("DRUM ");
+                         display.print(KIT_NAMES[kitIndex]); break;
+  }
+
+  // --- d-pad cluster, lower left, staggered like the real board ---
+  const char *dl[4];   // Up, Down, Left, Right
+  // Two characters max: a 16px box fits 2 glyphs (6px each) with padding.
+  if (inChordMode())      { dl[0]="Mj"; dl[1]="Mn"; dl[2]="Su"; dl[3]="Dm"; }
+  else if (inCustom())    { dl[0]="O+"; dl[1]="O-"; dl[2]="B-"; dl[3]="B+"; }
+  else if (drumGM())      { dl[0]="B+"; dl[1]="B-"; dl[2]="K-"; dl[3]="K+"; }
+  else                    { dl[0]="O+"; dl[1]="O-"; dl[2]="S-"; dl[3]="S+"; }
+
+  keyBox( 0, 14, 16, 13, dl[2], dpadState[2]);   // LEFT
+  keyBox(17, 23, 16, 13, dl[1], dpadState[1]);   // DOWN
+  keyBox(34, 32, 16, 13, dl[3], dpadState[3]);   // RIGHT
+  keyBox( 0, 48, 33, 13, dl[0], dpadState[0]);   // UP (wide thumb key)
+
+  // --- main 8 keys, two staggered rows on the right ---
+  char lab[6];
+  for (uint8_t i = 0; i < 4; i++) {              // punches
+    mainKeyLabel(i, lab);
+    keyBox(56 + i * 18, 14 + i * 2, 17, 13, lab, btnState[i]);
+  }
+  for (uint8_t i = 0; i < 4; i++) {              // kicks
+    mainKeyLabel(i + 4, lab);
+    keyBox(52 + i * 18, 31 + i * 2, 17, 13, lab, btnState[i + 4]);
+  }
+
+  // --- function row reminder along the bottom right ---
+  display.setCursor(52, 55);
+  // x=52 leaves room for 12 characters (52 + 12*6 = 124 < 128).
+  if (inChordMode())   display.print("L3+6 R3m7 H9");
+  else if (inCustom()) display.print("hold HM:rec");
+  else if (drumGM())   display.print("R3 to melody");
+  else                 display.print("L3 lp R3 drm");
+
+  display.display();
+}
+
 void drawScreen() {
   if (!displayOk) return;
   if (millis() - lastDraw < DRAW_INTERVAL_MS) return;
   lastDraw = millis();
+
+  // Holding Select shows the cheat sheet instead of the status readout.
+  if (selectState) { drawHelp(); return; }
 
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
@@ -801,6 +1022,13 @@ void drawScreen() {
     if (selectState) display.print("SHIFT");
   }
 
+  // --- brief save confirmation, top right ---
+  if (millis() - savedFlashAt < 1200) {
+    display.setTextSize(1);
+    display.setCursor(98, 0);
+    display.print("SAVE");
+  }
+
   // --- line 5: which keys hold a recorded sound ---
   display.setCursor(0, 56);
   bool anySaved = false;
@@ -831,6 +1059,9 @@ void setup() {
   usb_midi.setStringDescriptor("FightingBox MIDI");
   MIDI.begin(MIDI_CHANNEL_OMNI);
   while (!TinyUSBDevice.mounted()) delay(1);
+
+  EEPROM.begin(4096);
+  loadSettings();   // restore banks, overrides and settings from flash
 
   // Bring the OLED up only AFTER USB is enumerated: a blocking display
   // init before enumeration stalls the host handshake and makes the whole
@@ -864,7 +1095,23 @@ void loop() {
 
   // ---- Start: cycle melodic modes ----
   // Start: TAP cycles melodic mode, HOLD toggles latch (sustain) mode.
+  // SELECT + START = factory reset: wipe saved settings and restore the
+  // compiled-in banks. Deliberately a two-key chord so it cannot be hit
+  // by accident.
   if (readDebounced(PIN_START, startState, startLastRaw, startLastChange)) {
+    if (startState && selectState) {
+      factoryReset();
+      shiftUsed = true;
+      allNotesOff();
+      loopClear();
+      for (uint8_t b = 0; b < 8; b++) overrideActive[b] = false;
+      octaveShift = 0; transposeShift = 0; velocity = 100;
+      scaleIndex = 0; customBankIndex = 0; kitIndex = 0; currentBank = 0;
+      latchMode = false;
+      settingsDirty = false;   // don't immediately re-save what we wiped
+      markStateDirty();
+      return;                  // skip the normal Start handling this pass
+    }
     if (startState) {
       startPressStart = millis();
       startLongFired = false;
@@ -1165,6 +1412,13 @@ void loop() {
 
   loopTick();
   drawScreen();
+
+  // Autosave: commit only after things have settled, and never mid-note.
+  if (settingsDirty && (millis() - lastChangeAt > SAVE_DEBOUNCE_MS)) {
+    bool anyHeld = false;
+    for (uint8_t i = 0; i < 8; i++) if (btnState[i]) anyHeld = true;
+    if (!anyHeld && loopState != LOOP_REC) saveSettings();
+  }
 
   // Publish state when it changed, plus a slow heartbeat so a monitor
   // opened after the fact still syncs without touching the controller.

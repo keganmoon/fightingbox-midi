@@ -66,7 +66,7 @@ extension can move back onto it (see *Known gaps*).
 |---|---|---|
 | ~~TURBO~~ | *dead switch* | — |
 | **HOME** | next scale / chord-mode: +9th | **record** |
-| **SELECT** | panic | shift layer |
+| **SELECT** | panic | shift layer + on-screen button map |
 | **START** | next melodic mode | latch (sustain) mode |
 | **L3** | looper transport / chord-mode: +6th | erase loop |
 | **R3** | drums ⇄ melody / chord-mode: +m7 | — |
@@ -170,6 +170,25 @@ physically held. Colour coding: green = held, amber = latched, blue =
 recorded override, pink = drum voice, purple = pitched note, dashed = dead
 switch.
 
+### Running it
+
+It is a single self-contained file — no server, no build step, no
+dependencies. Open it directly:
+
+```bash
+xdg-open ~/projects/fightingbox_midi/monitor.html
+```
+
+Allow the MIDI permission when prompted. It connects to any input whose
+name matches `pico` or `fighting`, and reconnects automatically when the
+board is replugged, so you can leave the tab open across reflashes.
+
+Deliberately **not** served from the board. Embedding a web server would
+mean USB networking (RNDIS/ECM), which needs driver coaxing on Windows,
+is not native on macOS, and does not work on iOS at all — a lot of
+plumbing for something a local file already does, on a page you mostly
+stop needing once the OLED shows the button map.
+
 ### How it knows
 
 The firmware broadcasts its entire state as Control Change messages on
@@ -230,8 +249,6 @@ the web configurator (hold **START** while plugging in, browse to
 
 ## Known gaps
 
-- **Custom bank edits and overrides live in RAM** and are lost on unplug.
-  Persisting them to flash is unimplemented.
 - **No M7 chord extension** — it lived on the dead Turbo key.
 - **Velocity is uniform.** The keys are digital, so there is no touch
   sensitivity; the shift layer sets a global velocity instead.
@@ -243,10 +260,36 @@ A 128x64 SSD1306 OLED at `0x3C` on **I2C block 1** (GPIO 26 SDA / 27 SCL),
 driven through `Wire1` — *not* `Wire`, which is block 0 and physically
 cannot reach those pins. See `DISPLAY.md`.
 
-It shows the mode in large text, the setting that matters for that mode
-(scale / chord spelling / bank / kit), octave-transpose-velocity, anything
-currently engaged (loop, latch, shift, record prompts), and which keys hold
-a recorded sound. Redrawn at ~12 fps so it never delays note output.
+**Status view** (default): mode in large text, the setting that matters for
+that mode (scale / chord spelling / bank / kit), octave-transpose-velocity,
+anything currently engaged (loop, latch, record prompts), and which keys
+hold a recorded sound. A brief `SAVE` appears when settings commit.
+
+**Button map** (hold `SELECT`): draws the physical board — d-pad staggered
+lower-left, punches and kicks in two rows on the right — with every key
+labelled by what it does *in the current mode*. Note names in
+Chromatic/Scale, degree numbers in Chord, `BD SD CH OH…` in drum banks,
+`SAV` on any key holding a recorded sound. **Keys fill solid while held**,
+so it doubles as an input tester.
+
+Both views redraw at ~12 fps so the screen never delays note output.
+
+Layout note: at this size a 16px box fits two 6px glyphs, and the footer
+starts at x=52 so it holds 12 characters. Changes to the labels are easy to
+overflow — mock the geometry and look at it before flashing.
+
+## Persistence
+
+Banks, recorded overrides, scale, kit, octave, transpose, velocity and the
+current mode are saved to flash and restored on power-up. There is no save
+button.
+
+Flash writes stall the CPU for milliseconds, so nothing is written from the
+hot path: changes set a dirty flag and commit after ~2.5 s of quiet, never
+while a key is held or the looper is recording.
+
+**`SELECT` + `START` = factory reset** — wipes saved settings and restores
+the compiled-in banks. A two-key chord so it cannot be hit by accident.
 
 ## Troubleshooting
 
