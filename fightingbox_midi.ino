@@ -98,11 +98,29 @@
 
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 // Triad (3) + up to 4 stacked extensions + headroom.
 // Must be a #define up here: Arduino auto-inserts function prototypes
 // directly below the includes, and they reference this in array params.
 #define MAX_CHORD_NOTES 8
+
+// ---- OLED --------------------------------------------------------------
+// CONFIRMED by an I2C probe: an SSD1306 answers at 0x3C on I2C BLOCK 1.
+// GPIO 26/27 can only belong to block 1, which the Arduino-Pico core calls
+// Wire1 - NOT Wire (block 0). Driving this with `Wire` fails silently and
+// looks exactly like a missing panel; that cost a lot of debugging.
+#define SCREEN_W 128
+#define SCREEN_H 64
+#define OLED_SDA 26
+#define OLED_SCL 27
+#define OLED_ADDR 0x3C
+Adafruit_SSD1306 display(SCREEN_W, SCREEN_H, &Wire1, -1);
+bool displayOk = false;
+unsigned long lastDraw = 0;
+const unsigned long DRAW_INTERVAL_MS = 80;  // ~12fps, keeps MIDI latency low
 
 // ---- USB MIDI device ----
 Adafruit_USBD_MIDI usb_midi;
@@ -714,6 +732,89 @@ void sendState() {
   lastStateSend = millis();
 }
 
+// The screen mirrors the monitor page: what mode you are in, the setting
+// that matters for that mode, and any modifier that is currently engaged.
+void drawScreen() {
+  if (!displayOk) return;
+  if (millis() - lastDraw < DRAW_INTERVAL_MS) return;
+  lastDraw = millis();
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  // --- line 1: mode, big ---
+  display.setTextSize(2);
+  display.setCursor(0, 0);
+  switch (currentMode) {
+    case MODE_CHROMATIC: display.print("CHROMA"); break;
+    case MODE_SCALE:     display.print("SCALE");  break;
+    case MODE_CHORD:     display.print("CHORD");  break;
+    case MODE_CUSTOM:    display.print("CUSTOM"); break;
+    case MODE_DRUM_GM:   display.print("DRUMS");  break;
+  }
+
+  // --- line 2: the detail that matters for this mode ---
+  display.setTextSize(1);
+  display.setCursor(0, 20);
+  if (currentMode == MODE_SCALE) {
+    display.print(SCALE_NAMES[scaleIndex]);
+  } else if (currentMode == MODE_CHORD) {
+    bool any = false;
+    for (uint8_t t = 0; t < NUM_CHORD_TYPES; t++) {
+      if (typeActive(t)) { display.print(CHORD_TYPE_NAMES[t]); any = true; break; }
+    }
+    if (!any) display.print("diatonic");
+    for (uint8_t e = 0; e < NUM_EXTENSIONS; e++) {
+      if (extActive(e)) { display.print(" +"); display.print(EXT_NAMES[e]); }
+    }
+  } else if (currentMode == MODE_CUSTOM) {
+    display.print("bank ");
+    display.print(CUSTOM_BANK_NAMES[customBankIndex]);
+  } else if (currentMode == MODE_DRUM_GM) {
+    display.print(KIT_NAMES[kitIndex]);
+    display.print(" / ");
+    display.print(BANK_NAMES[currentBank]);
+  } else {
+    display.print("C4 + semitones");
+  }
+
+  // --- line 3: octave / transpose / velocity ---
+  display.setCursor(0, 32);
+  display.print("oct ");
+  if (octaveShift >= 0) display.print("+");
+  display.print(octaveShift);
+  display.print("  semi ");
+  if (transposeShift >= 0) display.print("+");
+  display.print(transposeShift);
+  display.print("  v");
+  display.print(velocity);
+
+  // --- line 4: whatever is engaged right now ---
+  display.setCursor(0, 44);
+  if (recordState == RECORD_WAIT_SOURCE)      display.print("REC: pick source");
+  else if (recordState == RECORD_WAIT_TARGET) display.print("REC: pick target");
+  else {
+    if (loopState == LOOP_REC)       display.print("LOOP rec ");
+    else if (loopState == LOOP_PLAY) display.print(loopMuted ? "LOOP mute " : "LOOP play ");
+    else if (loopState == LOOP_DUB)  display.print("LOOP dub ");
+    if (latchMode)   display.print("LATCH ");
+    if (selectState) display.print("SHIFT");
+  }
+
+  // --- line 5: which keys hold a recorded sound ---
+  display.setCursor(0, 56);
+  bool anySaved = false;
+  for (uint8_t i = 0; i < 8; i++) {
+    if (overrideActive[i]) {
+      if (!anySaved) { display.print("saved:"); anySaved = true; }
+      display.print(" ");
+      display.print(BTN_NAMES[i]);
+    }
+  }
+
+  display.display();
+}
+
 void setup() {
   for (uint8_t i = 0; i < 8; i++) pinMode(BTN_PINS[i], INPUT_PULLUP);
   pinMode(PIN_UP,     INPUT_PULLUP);
@@ -730,6 +831,31 @@ void setup() {
   usb_midi.setStringDescriptor("FightingBox MIDI");
   MIDI.begin(MIDI_CHANNEL_OMNI);
   while (!TinyUSBDevice.mounted()) delay(1);
+
+  // Bring the OLED up only AFTER USB is enumerated: a blocking display
+  // init before enumeration stalls the host handshake and makes the whole
+  // device undetectable.
+  Wire1.setSDA(OLED_SDA);
+  Wire1.setSCL(OLED_SCL);
+  Wire1.setClock(400000);
+  Wire1.begin();
+
+  // Probe for an ACK first - begin() can block much longer on a dead bus.
+  Wire1.beginTransmission(OLED_ADDR);
+  if (Wire1.endTransmission() == 0) {
+    displayOk = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
+  }
+  if (displayOk) {
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 12);
+    display.println("FIGHTING");
+    display.println("BOX MIDI");
+    display.display();
+    delay(700);
+  }
+
   sendState();
 }
 
@@ -1038,6 +1164,7 @@ void loop() {
   }
 
   loopTick();
+  drawScreen();
 
   // Publish state when it changed, plus a slow heartbeat so a monitor
   // opened after the fact still syncs without touching the controller.

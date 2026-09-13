@@ -1,107 +1,108 @@
-# The display problem
+# The display — solved
 
-The board has an SSD1306-style 128×64 I²C OLED that GP2040-CE drove fine.
-Under this firmware it stays blank. This is what we know, what we ruled
-out, and what to try next.
+**The OLED works. The bug was mine: wrong I²C bus object.**
 
-## What the backup says
+## Root cause
 
-From `gp2040ce_backup_20260911152301079.gp2040`:
+From `gp2040ce_backup_ORIGINAL.gp2040`:
 
 ```json
 "display": { "enabled": 1, "sdaPin": 26, "sclPin": 27,
              "i2cAddress": "0x3c", "i2cBlock": 1, "i2cSpeed": 400000 }
 ```
 
-## The leading suspect: wrong I²C bus object
+`"i2cBlock": 1` was the field that mattered.
 
-`"i2cBlock": 1` is the important field.
-
-On the RP2040, each GPIO can only reach one specific I²C block. **GPIO 26
-and 27 belong to block 1 — they physically cannot be driven by block 0.**
-In the Arduino-Pico core, `Wire` is block 0 and `Wire1` is block 1.
+On the RP2040 each GPIO can only reach one specific I²C block, and **GPIO
+26/27 belong to block 1 — block 0 physically cannot drive them.** The
+Arduino-Pico core exposes block 0 as `Wire` and block 1 as `Wire1`.
 
 The firmware called:
 
 ```cpp
-Wire.setSDA(26);   // asking BLOCK 0 to use pins only block 1 can reach
-Wire.setSCL(27);
+Wire.setSDA(26);   // block 0, on pins only block 1 can reach
 ```
 
-That fails silently. No ACK ever comes back, the presence probe reports
-nothing on the bus, and the code correctly concludes "no display present"
-and skips drawing — producing exactly the blank screen observed. The
-one-word fix is `Wire1`.
+This fails silently. Nothing ever ACKs, the presence probe finds no device,
+and the code correctly concludes "no display present" and skips drawing.
+A wrong-bus setup is indistinguishable from a dead panel from the outside:
+silence either way.
 
-This was never tested, because every attempt to run the I²C scanner
-coincided with the USB instability described below.
+Fix: `Wire1` throughout, and construct the driver against it —
+`Adafruit_SSD1306 display(W, H, &Wire1, -1)`.
 
-## Did the pinout errors or the dead button cause it?
+## Proof
 
-**No.** Worth stating clearly since both were real bugs found later:
+`projects/i2c_probe_midi` scans both buses and reports hits as MIDI notes
+(serial was unreliable on this machine; MIDI capture never was). Address
+becomes the note number, bus becomes the channel.
 
-- The **button pin errors** were on GPIO 0–14 and 20–22. The display is on
-  26/27. Different pins, different peripheral. Reading a button wrong
-  cannot stop an I²C device from ACKing.
-- The **dead Turbo switch** is an open circuit on one input pin. It has no
-  path to the I²C bus at all.
-- The **`Wire` vs `Wire1` mistake** is, however, the *same class* of error
-  as the pin bugs: a value was guessed from convention instead of read out
-  of the backup file. `"i2cBlock": 1` was sitting in that JSON the whole
-  time, exactly like the real pin numbers were.
+Result, five consecutive passes:
 
-The earlier **SH1106-instead-of-SSD1306** theory is still possible but is
-now the second-best explanation. It should not be investigated until the
-bus fix is tested, because a wrong-bus setup looks identical to a
-wrong-chip setup from the outside: silence either way.
+```
+ch1  note 60   -> 0x3C found on Wire1 (block 1, GPIO 26/27)
+ch16 note 1    -> heartbeat
+(nothing on ch2 -> block 0 empty, as expected)
+```
 
-## Confounder: USB instability
+0x3C on block 1 is exactly what the config file specified all along.
 
-Several scan attempts were lost to enumeration failures
-(`device descriptor read/64, error -110`). This was **not** caused by the
-display code — a minimal sketch containing no display or MIDI code failed
-the same way. It was traced to USB hubs, marginal cables, and an xHCI
-controller wedged by repeated BOOTSEL cycling. Plug directly into the
-machine, and reboot if a port stops enumerating.
+## Theories that were wrong
 
-One genuine display-code bug *was* found and fixed during this: the
-original `display.begin()` call could block long enough to stall USB
-enumeration before the host finished its handshake, making the whole device
-undetectable. The current code probes for an ACK with a bounded timeout
-before calling `begin()`, so a missing panel can never hang boot.
+- **SH1106 instead of SSD1306.** Plausible, and common on cheap GP2040-CE
+  boards, but wrong here — a stock `SSD1306` init works fine.
+- **The button pinout errors.** Real bugs, but unrelated: buttons are on
+  GPIO 0–14 and 20–22, the display on 26/27. Different pins, different
+  peripheral.
+- **The dead Turbo switch.** An open circuit on one input pin has no path
+  to the I²C bus.
 
-## Is the web configurator still reachable?
+They do share a *cause* with the display bug: a value guessed from
+convention when the correct one was sitting in the backup JSON. `i2cBlock`,
+like the real pin numbers, was in that file the whole time.
 
-**No.** `http://192.168.7.1` is a GP2040-CE feature — that firmware ships an
-embedded HTTP server and presents itself as a USB network adapter. This
-firmware is a MIDI device and serves nothing. The address returns only
-while GP2040-CE is flashed.
+## A genuine second bug, also fixed
 
-It would not identify the panel anyway: the configurator exposes wiring
-configuration (pins, address, speed), not the controller chip. It has no
-"which silicon is this" readout, and the backup JSON contains no chip field.
+The original display code called `display.begin()` **before** USB
+enumeration finished. On a bus where nothing answers, that call can block
+long enough to stall the host handshake, making the entire device
+undetectable — this produced `device descriptor read/64, error -110` and a
+board that appeared bricked.
 
-**But reflashing GP2040-CE is still the single most useful diagnostic**, for
-a different reason: it is a known-good driver for this exact panel. So
+Current code: bring up USB first, then probe for an ACK with a bounded
+timeout, and only call `begin()` if something answers. A missing or broken
+panel can no longer prevent the instrument from working.
 
-- **screen works under GP2040-CE** → panel and wiring are fine, the fault
-  is entirely in this firmware, and `Wire1` is almost certainly it.
-- **screen stays blank under GP2040-CE too** → the panel or its cable is
-  dead, and no amount of firmware work will help.
+## Note on testing with stock GP2040-CE
 
-That single test cleanly separates hardware from software, which nothing
-tried so far has done.
+Reflashing stock GP2040-CE as a hardware sanity check **does not work on
+this board**, worth recording so nobody retries it:
 
-## Next steps, in order
+- The stock Pico build ships with the display **disabled by default**, so a
+  blank screen there would prove nothing without importing the config JSON
+  first.
+- Importing requires the web configurator, which needs **S2 = GPIO 17** in
+  the stock default pinout. Nothing on this board is wired to GPIO 17.
+- Holding this board's Start (GPIO 6) at boot instead matches stock `B1`,
+  which selects Nintendo Switch mode — the board enumerates as a "HORI
+  Pokken" controller rather than opening web config.
 
-1. **Flash stock GP2040-CE and look at the screen.** Hardware or software,
-   answered in one step. Restore afterwards with the saved `.uf2` and JSON.
-2. If it works there, **run the two-bus scanner** (`projects/i2c_scan`,
-   already written — scans `Wire1` on 26/27 *and* `Wire` on its defaults)
-   and read the result over USB serial.
-3. If something ACKs at `0x3C` on `Wire1`, re-enable the display code with
-   `Wire1` throughout. The rendering code still exists in git history and
-   can be restored rather than rewritten — it drew mode, scale/kit, chord
-   modifiers, record prompts and saved-key indicators.
-4. Only if `Wire1` ACKs but `SSD1306` init still fails should the SH1106
-   theory be revisited (`Adafruit SH110X` library).
+`http://192.168.7.1` only exists while GP2040-CE is flashed; it is a
+GP2040-CE feature (embedded HTTP server over USB networking), not something
+this firmware provides. It would not have identified the panel regardless —
+it exposes wiring config, not the controller chip.
+
+## What the screen shows
+
+Refreshed at ~12 fps, deliberately throttled to keep MIDI latency low:
+
+```
+CHROMA              <- mode, large
+Major               <- scale / chord quality / bank / kit, per mode
+oct +0  semi +0  v100
+LOOP play LATCH     <- whatever is engaged right now
+saved: 1P 3K        <- keys holding a recorded sound
+```
+
+In Chord mode line 2 shows the live chord spelling, e.g. `Minor +m7`, or
+`diatonic` when no modifier is held.

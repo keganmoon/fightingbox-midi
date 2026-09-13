@@ -13,8 +13,8 @@ projects/fightingbox_midi/
 ├── fightingbox_midi.ino   firmware
 ├── monitor.html           live monitor (Web MIDI, Chromium browsers)
 └── README.md
-projects/pin_probe/        throwaway sketch: sends GPIO number as note number
-projects/i2c_scan/         throwaway sketch: scans both I2C buses
+projects/pin_probe/        diagnostic: sends GPIO number as note number
+projects/i2c_probe_midi/   diagnostic: scans both I2C buses, reports via MIDI
 ```
 
 ---
@@ -232,11 +232,21 @@ the web configurator (hold **START** while plugging in, browse to
 
 - **Custom bank edits and overrides live in RAM** and are lost on unplug.
   Persisting them to flash is unimplemented.
-- **The OLED does not work.** See `DISPLAY.md`.
 - **No M7 chord extension** — it lived on the dead Turbo key.
 - **Velocity is uniform.** The keys are digital, so there is no touch
   sensitivity; the shift layer sets a global velocity instead.
 - The looper is free-timing only. No tempo, click, or quantise.
+
+## On-board display
+
+A 128x64 SSD1306 OLED at `0x3C` on **I2C block 1** (GPIO 26 SDA / 27 SCL),
+driven through `Wire1` — *not* `Wire`, which is block 0 and physically
+cannot reach those pins. See `DISPLAY.md`.
+
+It shows the mode in large text, the setting that matters for that mode
+(scale / chord spelling / bank / kit), octave-transpose-velocity, anything
+currently engaged (loop, latch, shift, record prompts), and which keys hold
+a recorded sound. Redrawn at ~12 fps so it never delays note output.
 
 ## Troubleshooting
 
