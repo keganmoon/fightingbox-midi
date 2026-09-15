@@ -228,6 +228,21 @@ const uint8_t DRUM_BANKS[NUM_BANKS][8] = {
 const char* BANK_NAMES[NUM_BANKS] = {"Core", "Alt", "Latin"};
 uint8_t currentBank = 0;
 
+// GM Program Change per melodic mode, sent on channel 1 whenever the mode
+// changes, so a receiver like bs-16i (16-part multitimbral, per-channel
+// patch) swaps to a distinct sound automatically - no manual patch-picking
+// in the app. Picked from the GM synth lead/pad families so every mode
+// actually sounds synth-y instead of the receiver's default piano/organ.
+uint8_t programForMode(Mode m) {
+  switch (m) {
+    case MODE_CHROMATIC: return 81; // Lead 2 (sawtooth)
+    case MODE_SCALE:     return 90; // Pad 3 (polysynth)
+    case MODE_CHORD:     return 89; // Pad 2 (warm)
+    case MODE_CUSTOM:    return 87; // Lead 8 (bass+lead)
+    default:             return 0;  // MODE_DRUM_GM: kit PC handles this
+  }
+}
+
 const uint8_t NUM_KITS = 9;
 const uint8_t KIT_PROGRAMS[NUM_KITS] = {0, 8, 16, 24, 25, 32, 40, 48, 56};
 const char* KIT_NAMES[NUM_KITS] = {
@@ -675,6 +690,12 @@ void switchMode(Mode m) {
   for (uint8_t i = 0; i < NUM_CHORD_TYPES; i++) typeHeld[i] = false;
   for (uint8_t i = 0; i < NUM_EXTENSIONS;  i++) extHeld[i]  = false;
   currentMode = m;
+  // Melodic modes each get their own instrument on CHANNEL_MELODY so an
+  // app like bs-16i (per-channel patch) audibly changes sound on mode
+  // switch. Drum mode's Program Change is handled by the kit cycling code.
+  if (m != MODE_DRUM_GM) {
+    MIDI.sendProgramChange(programForMode(m), CHANNEL_MELODY);
+  }
   markStateDirty();
 }
 
@@ -1062,6 +1083,11 @@ void setup() {
 
   EEPROM.begin(4096);
   loadSettings();   // restore banks, overrides and settings from flash
+
+  // Announce the boot mode's instrument immediately, otherwise bs-16i (or
+  // any per-channel receiver) is left holding whatever patch it had before
+  // power-on instead of the one that matches currentMode.
+  MIDI.sendProgramChange(programForMode(currentMode), CHANNEL_MELODY);
 
   // Bring the OLED up only AFTER USB is enumerated: a blocking display
   // init before enumeration stalls the host handshake and makes the whole
