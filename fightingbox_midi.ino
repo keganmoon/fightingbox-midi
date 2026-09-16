@@ -394,6 +394,22 @@ bool btnLastRaw[8] = {false};
 unsigned long btnLastChange[8] = {0};
 bool btnSuppressed[8] = {false}; // press consumed by the record flow
 
+// ---- Pitch bend: L3 = bend down, R3 = bend up (2026-09-16) ----
+// Only kicks in when a melodic key is ALREADY held in Chromatic or Scale
+// mode at the moment L3/R3 is first pressed - decided once, on that press
+// edge, so a bend can never start or stop mid-hold. With nothing held (or
+// in Chord/Custom/Drum), L3/R3 keep doing exactly what they always did
+// (looper transport / drums toggle) - this adds a capability, it doesn't
+// take one away.
+const unsigned long BEND_RAMP_MS = 220;         // 0 -> full bend, eased in
+const uint8_t  PITCH_BEND_RANGE_SEMITONES = 12; // set via RPN at boot (1 octave
+                                                 // each way - real bends measured
+                                                 // off a source recording ran up to
+                                                 // ~7 semitones, so this leaves room)
+bool          fnIsBend[2]   = {false, false}; // this L3/R3 press is a bend this time
+unsigned long bendStart[2]  = {0, 0};
+int16_t       lastBendSent  = 0;
+
 // ---- Debounce: Start / Select ----
 bool startState=false,  startLastRaw=false;  unsigned long startLastChange=0;
 bool selectState=false, selectLastRaw=false; unsigned long selectLastChange=0;
@@ -665,11 +681,25 @@ void stopButton(uint8_t idx) {
 
 void allNotesOff() {
   for (uint8_t i = 0; i < 8; i++) stopButton(i);
+  sendPitchBend(0); // never leave a bent note hanging across a panic/mode switch
+}
+
+// Center-relative bend, -1.0..+1.0 maps to the full RPN'd range in either
+// direction. Tracks the last value sent so a repeated call for the same
+// value is a no-op (keeps the main loop cheap to call every frame).
+void sendPitchBend(float normalized) {
+  if (normalized >  1.0f) normalized =  1.0f;
+  if (normalized < -1.0f) normalized = -1.0f;
+  int16_t value = (int16_t)(normalized * 8191.0f);
+  if (value == lastBendSent) return;
+  MIDI.sendPitchBend(value, CHANNEL_MELODY);
+  lastBendSent = value;
 }
 
 void switchMode(Mode m) {
   if (currentMode == m) return;
   allNotesOff();
+  fnIsBend[0] = false; fnIsBend[1] = false; // don't carry a bend across a mode switch
   // Leaving chord mode: drop momentary modifier state so a held button
   // can't stick "on" after the mode changes underneath it.
   for (uint8_t i = 0; i < NUM_CHORD_TYPES; i++) typeHeld[i] = false;
@@ -1060,6 +1090,16 @@ void setup() {
   MIDI.begin(MIDI_CHANNEL_OMNI);
   while (!TinyUSBDevice.mounted()) delay(1);
 
+  // RPN 0,0 = pitch bend range. Every General MIDI-compliant synth honours
+  // this; a receiver that ignores RPN just falls back to its own default
+  // range (usually +/-2 semitones) - never worse than doing nothing.
+  MIDI.sendControlChange(101, 0, CHANNEL_MELODY); // RPN MSB
+  MIDI.sendControlChange(100, 0, CHANNEL_MELODY); // RPN LSB
+  MIDI.sendControlChange(6,  PITCH_BEND_RANGE_SEMITONES, CHANNEL_MELODY); // data MSB = semitones
+  MIDI.sendControlChange(38, 0, CHANNEL_MELODY);  // data LSB = cents (none)
+  MIDI.sendControlChange(101, 127, CHANNEL_MELODY); // close the RPN (null it out)
+  MIDI.sendControlChange(100, 127, CHANNEL_MELODY);
+
   EEPROM.begin(4096);
   loadSettings();   // restore banks, overrides and settings from flash
 
@@ -1195,7 +1235,19 @@ void loop() {
     // Normal (non-chord) behavior.
     if (edge) markStateDirty(); // key light on press and release
     switch (i) {
-      case 0: // L3 -> looper transport: tap advances, hold clears
+      case 0: // L3 -> looper transport (tap advance / hold clear), UNLESS a
+              // melodic key is already held in Chromatic/Scale mode, in
+              // which case this press is a bend-down instead.
+        if (edge && pressed) {
+          bool held = false;
+          for (uint8_t b = 0; b < 8; b++) if (btnState[b]) { held = true; break; }
+          fnIsBend[0] = held && (currentMode == MODE_CHROMATIC || currentMode == MODE_SCALE);
+        }
+        if (fnIsBend[0]) {
+          if (edge && pressed) bendStart[0] = millis();
+          if (edge && !pressed) { fnIsBend[0] = false; sendPitchBend(0); }
+          break; // bend presses never touch the looper
+        }
         if (edge) {
           if (pressed) {
             fnPressStart[i] = millis();
@@ -1211,7 +1263,19 @@ void loop() {
         }
         break;
 
-      case 1: // R3 -> toggle real GM drums / back to the last melodic mode
+      case 1: // R3 -> toggle real GM drums / back to the last melodic mode,
+              // UNLESS a melodic key is already held (same rule as L3), in
+              // which case this press is a bend-UP instead.
+        if (edge && pressed) {
+          bool held = false;
+          for (uint8_t b = 0; b < 8; b++) if (btnState[b]) { held = true; break; }
+          fnIsBend[1] = held && (currentMode == MODE_CHROMATIC || currentMode == MODE_SCALE);
+        }
+        if (fnIsBend[1]) {
+          if (edge && pressed) bendStart[1] = millis();
+          if (edge && !pressed) { fnIsBend[1] = false; sendPitchBend(0); }
+          break; // bend presses never touch the drum-mode toggle
+        }
         if (edge && pressed) {
           switchMode(drumGM() ? MELODIC_CYCLE[melodicIndex] : MODE_DRUM_GM);
         }
@@ -1246,6 +1310,24 @@ void loop() {
           markStateDirty();
         }
         break;
+    }
+  }
+
+  // Live bend ramp: eased 0->full over BEND_RAMP_MS while L3 or R3 is held
+  // as a bend. Runs every loop pass (not gated on an edge) so the ramp is
+  // smooth rather than stepped. Auto-releases if the melodic key that
+  // qualified this bend gets released first (never bend into silence).
+  {
+    bool anyMelodicHeld = false;
+    for (uint8_t b = 0; b < 8; b++) if (btnState[b]) { anyMelodicHeld = true; break; }
+    if (!anyMelodicHeld) {
+      if (fnIsBend[0] || fnIsBend[1]) { fnIsBend[0] = false; fnIsBend[1] = false; sendPitchBend(0); }
+    } else if (fnIsBend[0] && fnState[0]) {
+      float t = (float)(millis() - bendStart[0]) / (float)BEND_RAMP_MS;
+      sendPitchBend(-1.0f * (t < 1.0f ? t : 1.0f));
+    } else if (fnIsBend[1] && fnState[1]) {
+      float t = (float)(millis() - bendStart[1]) / (float)BEND_RAMP_MS;
+      sendPitchBend(1.0f * (t < 1.0f ? t : 1.0f));
     }
   }
 

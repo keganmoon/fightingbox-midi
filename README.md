@@ -71,6 +71,16 @@ extension can move back onto it (see *Known gaps*).
 | **L3** | looper transport / chord-mode: +6th | erase loop |
 | **R3** | drums ⇄ melody / chord-mode: +m7 | — |
 
+**Pitch bend (added 2026-09-16):** in Chromatic or Scale mode, hold a melodic
+key first — while it's held, L3 bends the note down and R3 bends it up,
+each easing in over ~0.2s rather than snapping. Release L3/R3 to snap back
+to pitch; release the melodic key first and the bend cancels automatically.
+Bend range is a full octave each way (RPN-set at boot; falls back to a
+receiver's own default, usually ±2 semitones, if it ignores RPN). L3/R3
+only become bend when a melodic key is *already* down — with nothing held,
+they still do exactly what they always did (looper transport / drums
+toggle), so nothing existing was taken away to add this.
+
 `SELECT` + `HOME` wipes all recorded overrides.
 
 ### D-pad — depends on mode
