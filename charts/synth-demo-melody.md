@@ -8,6 +8,23 @@ own Fightbox synth (2026-09-16).
 2026-09-16, compiled clean, installed live on hardware the same day — the "Adding the
 bend feel" section below is playable right now, not a proposal.
 
+## Source identified: Wii Party "Main Menu" (2026-09-16)
+
+Kegan recognized the riff as the Wii Party main menu theme, composed by Ryo Nagamatsu.
+Confirmed independently via web search (composer credit matches across multiple
+sources) and cross-checked the key against Hooktheory's independent chord/melody
+analysis of the track (not sheet-music notation — a chord-progression tool, so nothing
+copied here): **the song's home key is E♭ major**, not the Bb major I originally logged.
+
+**Reconciled, not contradicted:** every note in my transcription (Bb–C–D–F–G) is fully
+diatonic within E♭ major — Bb is the song's 5th scale degree (the dominant), not the
+tonic. My transcription just happened to center on that dominant note within the sampled
+phrase, which is common in a short looping jingle that doesn't resolve to the tonic
+within the clip. The chart below (built from the actual audio via Demucs + Basic Pitch,
+not copied from anyone's sheet) is unaffected — same notes, same bend timings, same
+Fightbox key mapping — this just corrects the "home key" label to be technically
+accurate against the real song rather than the excerpt's local center.
+
 ## Method (v2 — corrected, 2026-09-16)
 
 Kegan flagged, correctly, that v1 (below) wasn't confidently verified and that the clip
