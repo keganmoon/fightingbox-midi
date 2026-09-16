@@ -1252,7 +1252,10 @@ void loop() {
         }
         if (fnIsBend[0]) {
           if (edge && pressed) bendStart[0] = millis();
-          if (edge && !pressed) { fnIsBend[0] = false; sendPitchBend(0); }
+          if (edge && !pressed) fnIsBend[0] = false; // ramp block below sends the
+                                                       // corrected value this same
+                                                       // pass - don't zero here, that
+                                                       // would glitch a still-active R3
           break; // bend presses never touch the looper
         }
         // A press that STARTED as a bend but got auto-cancelled mid-hold
@@ -1293,7 +1296,9 @@ void loop() {
         }
         if (fnIsBend[1]) {
           if (edge && pressed) bendStart[1] = millis();
-          if (edge && !pressed) { fnIsBend[1] = false; sendPitchBend(0); }
+          if (edge && !pressed) fnIsBend[1] = false; // see the L3 case above: the
+                                                       // ramp block sends the correct
+                                                       // value this same pass
           break; // bend presses never touch the drum-mode toggle
         }
         if (fnWasBend[1]) {
@@ -1362,7 +1367,10 @@ void loop() {
         float t = (float)(millis() - bendStart[1]) / (float)BEND_RAMP_MS;
         combined += (t < 1.0f ? t : 1.0f);
       }
-      if (fnIsBend[0] || fnIsBend[1]) sendPitchBend(combined);
+      // Always send, even when neither is currently active: this is what
+      // zeroes the bend out on the exact pass the last-held one releases
+      // (sendPitchBend's own lastBendSent dedup makes every other pass free).
+      sendPitchBend(combined);
     }
   }
 
