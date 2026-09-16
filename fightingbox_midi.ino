@@ -1256,11 +1256,18 @@ void loop() {
           break; // bend presses never touch the looper
         }
         // A press that STARTED as a bend but got auto-cancelled mid-hold
-        // (melodic key let go first, or a mode switch) must not fall
-        // through into looper logic on release - fnWasBend remembers that
-        // across the auto-cancel so the stale fnPressStart[0] timestamp
-        // (never set for a bend press) can't be misread as a long hold.
-        if (edge && !pressed && fnWasBend[0]) { fnWasBend[0] = false; break; }
+        // (melodic key let go first, or a mode switch) leaves L3 physically
+        // held with fnWasBend[0] set. Freeze ALL looper logic - not just
+        // the release edge, since the cancel happens on a non-edge pass
+        // while L3 is still down - until the real release edge arrives,
+        // which clears the flag and eats that edge. fnPressStart[0] was
+        // never set for a bend press, so without this guard the long-hold
+        // check below reads a stale timestamp and can fire loopClear()
+        // immediately.
+        if (fnWasBend[0]) {
+          if (edge && !pressed) fnWasBend[0] = false;
+          break;
+        }
         if (edge) {
           if (pressed) {
             fnPressStart[i] = millis();
@@ -1289,7 +1296,10 @@ void loop() {
           if (edge && !pressed) { fnIsBend[1] = false; sendPitchBend(0); }
           break; // bend presses never touch the drum-mode toggle
         }
-        if (edge && !pressed && fnWasBend[1]) { fnWasBend[1] = false; break; }
+        if (fnWasBend[1]) {
+          if (edge && !pressed) fnWasBend[1] = false;
+          break;
+        }
         if (edge && pressed) {
           switchMode(drumGM() ? MELODIC_CYCLE[melodicIndex] : MODE_DRUM_GM);
         }
