@@ -400,22 +400,27 @@ bool anyMelodicKeyHeld() {
   return false;
 }
 
-// ---- Pitch bend: L3 = bend down, R3 = bend up (2026-09-16) ----
+// ---- Pitch bend: D-pad Left = bend down, Right = bend up (2026-09-16,
+// moved off L3/R3 same day - Kegan: "don't want to use L3/R3 while
+// grooving, those little buttons aren't great for jamming, use the
+// arrow keys instead") ----
 // Only kicks in when a melodic key is ALREADY held in Chromatic or Scale
-// mode at the moment L3/R3 is first pressed - decided once, on that press
-// edge, so a bend can never start or stop mid-hold. With nothing held (or
-// in Chord/Custom/Drum), L3/R3 keep doing exactly what they always did
-// (looper transport / drums toggle) - this adds a capability, it doesn't
-// take one away.
+// mode at the moment Left/Right is first pressed - decided once, on that
+// press edge, so a bend can never start or stop mid-hold. With nothing
+// held, Left/Right keep doing exactly what they always did (permanent tap
+// / temporary hold semitone shift) - this adds a capability, it doesn't
+// take one away. Chord/Custom/Drum modes are untouched; bend is
+// Chromatic/Scale only (bendEligibleMode()), same as the L3/R3 version was.
 const unsigned long BEND_RAMP_MS = 220;         // 0 -> full bend, eased in
 const uint8_t  PITCH_BEND_RANGE_SEMITONES = 12; // set via RPN at boot (1 octave
                                                  // each way - real bends measured
                                                  // off a source recording ran up to
                                                  // ~7 semitones, so this leaves room)
-bool          fnIsBend[2]   = {false, false}; // this L3/R3 press is a bend this time
-bool          fnWasBend[2]  = {false, false}; // survives auto-cancel to gate release
-unsigned long bendStart[2]  = {0, 0};
-int16_t       lastBendSent  = 0;
+bool          dpadIsBend[2]   = {false, false}; // [0]=Left(down) [1]=Right(up):
+                                                 // this press is a bend this time
+bool          dpadWasBend[2]  = {false, false}; // survives auto-cancel to gate release
+unsigned long bendStart[2]    = {0, 0};
+int16_t       lastBendSent    = 0;
 
 // ---- Debounce: Start / Select ----
 bool startState=false,  startLastRaw=false;  unsigned long startLastChange=0;
@@ -692,9 +697,9 @@ void allNotesOff() {
   // factory reset, mode switch, dropping latch) is a hard reset point, and
   // a bend left dangling across one would resurrect on the next loop pass
   // since the melodic key may still be physically held.
-  if (fnIsBend[0]) fnWasBend[0] = true;
-  if (fnIsBend[1]) fnWasBend[1] = true;
-  fnIsBend[0] = false; fnIsBend[1] = false;
+  if (dpadIsBend[0]) dpadWasBend[0] = true;
+  if (dpadIsBend[1]) dpadWasBend[1] = true;
+  dpadIsBend[0] = false; dpadIsBend[1] = false;
   sendPitchBend(0); // never leave a bent note hanging across a panic/mode switch
 }
 
@@ -1248,33 +1253,7 @@ void loop() {
     // Normal (non-chord) behavior.
     if (edge) markStateDirty(); // key light on press and release
     switch (i) {
-      case 0: // L3 -> looper transport (tap advance / hold clear), UNLESS a
-              // melodic key is already held in Chromatic/Scale mode, in
-              // which case this press is a bend-down instead.
-        if (edge && pressed) {
-          fnIsBend[0] = anyMelodicKeyHeld() && bendEligibleMode();
-        }
-        if (fnIsBend[0]) {
-          if (edge && pressed) bendStart[0] = millis();
-          if (edge && !pressed) fnIsBend[0] = false; // ramp block below sends the
-                                                       // corrected value this same
-                                                       // pass - don't zero here, that
-                                                       // would glitch a still-active R3
-          break; // bend presses never touch the looper
-        }
-        // A press that STARTED as a bend but got auto-cancelled mid-hold
-        // (melodic key let go first, or a mode switch) leaves L3 physically
-        // held with fnWasBend[0] set. Freeze ALL looper logic - not just
-        // the release edge, since the cancel happens on a non-edge pass
-        // while L3 is still down - until the real release edge arrives,
-        // which clears the flag and eats that edge. fnPressStart[0] was
-        // never set for a bend press, so without this guard the long-hold
-        // check below reads a stale timestamp and can fire loopClear()
-        // immediately.
-        if (fnWasBend[0]) {
-          if (edge && !pressed) fnWasBend[0] = false;
-          break;
-        }
+      case 0: // L3 -> looper transport: tap advances, hold clears
         if (edge) {
           if (pressed) {
             fnPressStart[i] = millis();
@@ -1290,23 +1269,7 @@ void loop() {
         }
         break;
 
-      case 1: // R3 -> toggle real GM drums / back to the last melodic mode,
-              // UNLESS a melodic key is already held (same rule as L3), in
-              // which case this press is a bend-UP instead.
-        if (edge && pressed) {
-          fnIsBend[1] = anyMelodicKeyHeld() && bendEligibleMode();
-        }
-        if (fnIsBend[1]) {
-          if (edge && pressed) bendStart[1] = millis();
-          if (edge && !pressed) fnIsBend[1] = false; // see the L3 case above: the
-                                                       // ramp block sends the correct
-                                                       // value this same pass
-          break; // bend presses never touch the drum-mode toggle
-        }
-        if (fnWasBend[1]) {
-          if (edge && !pressed) fnWasBend[1] = false;
-          break;
-        }
+      case 1: // R3 -> toggle real GM drums / back to the last melodic mode
         if (edge && pressed) {
           switchMode(drumGM() ? MELODIC_CYCLE[melodicIndex] : MODE_DRUM_GM);
         }
@@ -1342,35 +1305,6 @@ void loop() {
         }
         break;
     }
-  }
-
-  // Live bend ramp + send: this block is the ONLY place that ever calls
-  // sendPitchBend for L3/R3 bends - the case-block handlers above only
-  // ever flip fnIsBend/bendStart, never send. It runs unconditionally,
-  // every pass, so a same-pass release of L3/R3 together with the melodic
-  // key (or of both L3 and R3 at once) can never leave a stale bend value
-  // stuck - the true value is recomputed fresh every tick from live pin
-  // state, and sendPitchBend's own dedup keeps repeats free.
-  {
-    bool anyMelodicHeld = anyMelodicKeyHeld();
-    if (!anyMelodicHeld) {
-      if (fnIsBend[0]) fnWasBend[0] = true;
-      if (fnIsBend[1]) fnWasBend[1] = true;
-      fnIsBend[0] = false; fnIsBend[1] = false;
-    }
-    float combined = 0.0f;
-    if (anyMelodicHeld && fnIsBend[0] && fnState[0]) {
-      float t = (float)(millis() - bendStart[0]) / (float)BEND_RAMP_MS;
-      combined -= (t < 1.0f ? t : 1.0f);
-    }
-    if (anyMelodicHeld && fnIsBend[1] && fnState[1]) {
-      float t = (float)(millis() - bendStart[1]) / (float)BEND_RAMP_MS;
-      combined += (t < 1.0f ? t : 1.0f);
-    }
-    sendPitchBend(combined); // 0.0 whenever neither condition above held -
-                              // that's what guarantees a stuck bend is
-                              // impossible, not a special case that has to
-                              // remember to fire.
   }
 
   // ---- D-pad: pitch, chord types, or drum banks depending on mode ----
@@ -1430,6 +1364,36 @@ void loop() {
       }
 
     } else if (pitchMode) {
+      // Left/Right (i==2,3): bend if a melodic key is ALREADY held, else
+      // the normal tap-permanent/hold-temporary semitone shift (unchanged
+      // from before bend existed). Up/Down (i==0,1, octave shift) never
+      // participate in bend - only Left/Right, since they're the ones that
+      // already move pitch by ±1 semitone and bend is a pitch gesture.
+      bool bendCapable = (i == 2 || i == 3);
+      uint8_t bendIdx = (i == 2) ? 0 : 1; // 0=down(Left) 1=up(Right)
+
+      if (bendCapable && edge && pressed) {
+        dpadIsBend[bendIdx] = anyMelodicKeyHeld();
+      }
+      if (bendCapable && dpadIsBend[bendIdx]) {
+        if (edge && pressed) bendStart[bendIdx] = millis();
+        if (edge && !pressed) dpadIsBend[bendIdx] = false; // ramp block below
+                                                             // sends the corrected
+                                                             // value this pass
+        continue; // bend presses never touch the semitone-shift logic below
+      }
+      // A press that STARTED as a bend but got auto-cancelled mid-hold
+      // (melodic key let go first, or a mode switch) must freeze ALL
+      // semitone-shift logic below - not just the release edge, since the
+      // cancel can happen on a non-edge pass while Left/Right is still
+      // down - until the real release edge arrives and clears the flag.
+      // dpadPressStart[i] was never set for a bend press, so without this
+      // guard the hold-threshold check below misreads a stale timestamp.
+      if (bendCapable && dpadWasBend[bendIdx]) {
+        if (edge && !pressed) dpadWasBend[bendIdx] = false;
+        continue;
+      }
+
       if (edge) markStateDirty();
       if (edge) {
         if (pressed) {
@@ -1470,6 +1434,36 @@ void loop() {
         markStateDirty();
       }
     }
+  }
+
+  // Live bend ramp + send: this block is the ONLY place that ever calls
+  // sendPitchBend for D-pad Left/Right bends - the pitchMode branch above
+  // only ever flips dpadIsBend/bendStart, never sends. It runs
+  // unconditionally, every pass, so a same-pass release of Left/Right
+  // together with the melodic key (or of both Left and Right at once) can
+  // never leave a stale bend value stuck - the true value is recomputed
+  // fresh every tick from live pin state, and sendPitchBend's own dedup
+  // keeps repeats free.
+  {
+    bool anyMelodicHeld = anyMelodicKeyHeld();
+    if (!anyMelodicHeld) {
+      if (dpadIsBend[0]) dpadWasBend[0] = true;
+      if (dpadIsBend[1]) dpadWasBend[1] = true;
+      dpadIsBend[0] = false; dpadIsBend[1] = false;
+    }
+    float combined = 0.0f;
+    if (anyMelodicHeld && dpadIsBend[0] && dpadState[2]) { // Left = down
+      float t = (float)(millis() - bendStart[0]) / (float)BEND_RAMP_MS;
+      combined -= (t < 1.0f ? t : 1.0f);
+    }
+    if (anyMelodicHeld && dpadIsBend[1] && dpadState[3]) { // Right = up
+      float t = (float)(millis() - bendStart[1]) / (float)BEND_RAMP_MS;
+      combined += (t < 1.0f ? t : 1.0f);
+    }
+    sendPitchBend(combined); // 0.0 whenever neither condition above held -
+                              // that's what guarantees a stuck bend is
+                              // impossible, not a special case that has to
+                              // remember to fire.
   }
 
   // ---- Main 8 buttons ----

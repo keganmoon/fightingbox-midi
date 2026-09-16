@@ -218,37 +218,45 @@ true depth). Import into a DAW to hear it with the bends intact.
 
 ---
 
-## Firmware modulation support — BUILT (2026-09-16)
+## Firmware modulation support — BUILT (2026-09-16), moved to D-pad same day
 
 Checked the firmware directly (`fightingbox_midi.ino`) before touching it: no pitch bend,
-modulation CC, or portamento/glide existed anywhere. Fixed:
+modulation CC, or portamento/glide existed anywhere. Built it on L3/R3 first, then Kegan
+flagged that small buttons like L3/R3 aren't great for a bend gesture mid-jam and asked
+for the D-pad instead. Moved it same day. Final version:
 
-- **L3 = bend down, R3 = bend up**, but ONLY when a melodic key is already held in
-  Chromatic or Scale mode at the moment L3/R3 is first pressed. With nothing held (or in
-  Chord/Custom/Drum mode), L3/R3 do exactly what they always did — looper transport and
-  the drums toggle are untouched, nothing existing was taken away.
+- **D-pad Left = bend down, Right = bend up**, but ONLY when a melodic key is already
+  held in Chromatic or Scale mode at the moment Left/Right is first pressed. With nothing
+  held, Left/Right do exactly what they always did — tap = permanent semitone shift,
+  hold = temporary — untouched, nothing existing was taken away. Chord/Custom/Drum modes
+  don't use the D-pad this way at all, so bend simply doesn't apply there.
 - Eased ramp (~0.2s to full bend, not an instant snap) via `sendPitchBend()`, ±1 octave
   range set with a standard RPN 0,0 message at boot (any GM-compliant receiver honours
   it; one that ignores RPN just falls back to its own default, usually ±2 semitones —
   never worse than doing nothing).
-- Auto-releases to center pitch if the melodic key lets go before L3/R3 does (can't bend
-  into silence), and is force-cleared on every mode switch / MIDI panic so a bend can
-  never get stuck across a state change.
+- Auto-releases to center pitch if the melodic key lets go before Left/Right does (can't
+  bend into silence), and is force-cleared on every mode switch / MIDI panic so a bend
+  can never get stuck across a state change.
 - **Compiled clean** with `arduino-cli compile --fqbn rp2040:rp2040:rpipico:usbstack=tinyusb`
-  — 107,516 bytes program (5%), 22,172 bytes RAM (8%), zero warnings.
+  — 107,428 bytes program (5%), 22,176 bytes RAM (8%), zero warnings, final version.
 
 Went through `ship.sh` — branch, PR, stage-1 code review, stage-2 ponytail audit — per the
-standing rule that agent firmware/code changes never land on main directly.
+standing rule that agent firmware/code changes never land on main directly. The L3/R3
+version went through 5 review rounds (3 real bugs caught and fixed - see the L3/R3 PR
+history for the full trail); the D-pad move reuses the exact same hold/release/mode-switch
+guard logic proven there, just retargeted at `dpadState`/`dpadIsBend`/`dpadWasBend`
+instead of `fnState`/`fnIsBend`/`fnWasBend`.
 
-### Why L3/R3 and not the D-pad or TURBO
+### Why the D-pad and not TURBO
 
 - **TURBO** is dead hardware (no GPIO responds) — a repair job, not something fixable
   from firmware.
-- **D-pad** is already octave/semitone shift in Chromatic/Scale and chord-type in Chord
-  mode; repurposing it would have been a bigger behavior change.
-- **L3/R3** are looper-transport and drums-toggle in melodic modes — real functions, but
-  ones that don't make sense to reach for *while a note is already ringing* (you're not
-  advancing the looper mid-note in practice). Gating bend on "a key is already down"
-  means the existing behavior is 100% preserved for every use case that doesn't involve
-  holding a note, and the two behaviors never conflict.
+- **L3/R3** work correctly (see the original PR) but are small, hard-to-reach buttons for
+  a gesture you want to do fluidly while actually playing — Kegan's call, and the right
+  one for "grooving," not just correctness.
+- **D-pad Left/Right** already move pitch by a semitone when tapped — bend is the same
+  axis, same gesture, just continuous instead of stepped, and it's a full-size, easy-to-reach
+  direction pad rather than two small side buttons. Gating bend on "a melodic key is
+  already down" means the existing tap/hold semitone-shift behavior is 100% preserved for
+  every use case that doesn't involve holding a note, exactly like the L3/R3 version was.
 

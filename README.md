@@ -71,15 +71,18 @@ extension can move back onto it (see *Known gaps*).
 | **L3** | looper transport / chord-mode: +6th | erase loop |
 | **R3** | drums ⇄ melody / chord-mode: +m7 | — |
 
-**Pitch bend (added 2026-09-16):** in Chromatic or Scale mode, hold a melodic
-key first — while it's held, L3 bends the note down and R3 bends it up,
-each easing in over ~0.2s rather than snapping. Release L3/R3 to snap back
-to pitch; release the melodic key first and the bend cancels automatically.
-Bend range is a full octave each way (RPN-set at boot; falls back to a
-receiver's own default, usually ±2 semitones, if it ignores RPN). L3/R3
-only become bend when a melodic key is *already* down — with nothing held,
-they still do exactly what they always did (looper transport / drums
-toggle), so nothing existing was taken away to add this.
+**Pitch bend (added 2026-09-16, moved to D-pad same day):** in Chromatic or
+Scale mode, hold a melodic key first — while it's held, D-pad Left bends the
+note down and Right bends it up, each easing in over ~0.2s rather than
+snapping. Release Left/Right to snap back to pitch; release the melodic key
+first and the bend cancels automatically. Bend range is a full octave each
+way (RPN-set at boot; falls back to a receiver's own default, usually ±2
+semitones, if it ignores RPN). Left/Right only become bend when a melodic
+key is *already* down — with nothing held, they still do exactly what they
+always did (tap = permanent semitone shift, hold = temporary), so nothing
+existing was taken away to add this. (First shipped on L3/R3, moved to the
+D-pad the same day — small buttons aren't great for a bend gesture while
+actually playing.)
 
 `SELECT` + `HOME` wipes all recorded overrides.
 
@@ -87,7 +90,7 @@ toggle), so nothing existing was taken away to add this.
 
 | Mode | Up / Down | Left / Right |
 |---|---|---|
-| Chromatic, Scale | octave ±1 | semitone ±1 |
+| Chromatic, Scale | octave ±1 | semitone ±1 (or pitch bend — see above — if a melodic key is already held) |
 | Chord | Major / Minor | Sus / Dim |
 | Custom | octave ±1 | previous / next bank |
 | Drum GM | drum bank | GM kit (Program Change) |
