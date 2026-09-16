@@ -363,6 +363,7 @@ void markStateDirty() { stateDirty = true; markSettingsDirty(); }
 bool inChordMode()   { return currentMode == MODE_CHORD; }
 bool drumGM()        { return currentMode == MODE_DRUM_GM; }
 bool inCustom()      { return currentMode == MODE_CUSTOM; }
+bool bendEligibleMode() { return currentMode == MODE_CHROMATIC || currentMode == MODE_SCALE; }
 // Must list every mode in MELODIC_CYCLE. Omitting one traps you in it:
 // Start only advances melodicIndex when this returns true, so a missing
 // mode makes switchMode() re-select the mode you are already in.
@@ -393,6 +394,11 @@ bool btnState[8]   = {false};
 bool btnLastRaw[8] = {false};
 unsigned long btnLastChange[8] = {0};
 bool btnSuppressed[8] = {false}; // press consumed by the record flow
+
+bool anyMelodicKeyHeld() {
+  for (uint8_t b = 0; b < 8; b++) if (btnState[b]) return true;
+  return false;
+}
 
 // ---- Pitch bend: L3 = bend down, R3 = bend up (2026-09-16) ----
 // Only kicks in when a melodic key is ALREADY held in Chromatic or Scale
@@ -1246,9 +1252,7 @@ void loop() {
               // melodic key is already held in Chromatic/Scale mode, in
               // which case this press is a bend-down instead.
         if (edge && pressed) {
-          bool held = false;
-          for (uint8_t b = 0; b < 8; b++) if (btnState[b]) { held = true; break; }
-          fnIsBend[0] = held && (currentMode == MODE_CHROMATIC || currentMode == MODE_SCALE);
+          fnIsBend[0] = anyMelodicKeyHeld() && bendEligibleMode();
         }
         if (fnIsBend[0]) {
           if (edge && pressed) bendStart[0] = millis();
@@ -1290,9 +1294,7 @@ void loop() {
               // UNLESS a melodic key is already held (same rule as L3), in
               // which case this press is a bend-UP instead.
         if (edge && pressed) {
-          bool held = false;
-          for (uint8_t b = 0; b < 8; b++) if (btnState[b]) { held = true; break; }
-          fnIsBend[1] = held && (currentMode == MODE_CHROMATIC || currentMode == MODE_SCALE);
+          fnIsBend[1] = anyMelodicKeyHeld() && bendEligibleMode();
         }
         if (fnIsBend[1]) {
           if (edge && pressed) bendStart[1] = millis();
@@ -1344,17 +1346,13 @@ void loop() {
 
   // Live bend ramp + send: this block is the ONLY place that ever calls
   // sendPitchBend for L3/R3 bends - the case-block handlers above only
-  // ever flip fnIsBend/bendStart, never send. Running unconditionally,
-  // every pass, regardless of what changed this tick, is deliberate: three
-  // earlier attempts at conditionally deciding "should this pass send"
-  // each missed a same-pass-release ordering case (bend+note released
-  // together, L3+R3 released on the same tick, etc). Always computing the
-  // true current value and letting sendPitchBend's own dedup (skip if
-  // unchanged) keep it cheap removes that whole bug class instead of
-  // patching each case as found.
+  // ever flip fnIsBend/bendStart, never send. It runs unconditionally,
+  // every pass, so a same-pass release of L3/R3 together with the melodic
+  // key (or of both L3 and R3 at once) can never leave a stale bend value
+  // stuck - the true value is recomputed fresh every tick from live pin
+  // state, and sendPitchBend's own dedup keeps repeats free.
   {
-    bool anyMelodicHeld = false;
-    for (uint8_t b = 0; b < 8; b++) if (btnState[b]) { anyMelodicHeld = true; break; }
+    bool anyMelodicHeld = anyMelodicKeyHeld();
     if (!anyMelodicHeld) {
       if (fnIsBend[0]) fnWasBend[0] = true;
       if (fnIsBend[1]) fnWasBend[1] = true;
