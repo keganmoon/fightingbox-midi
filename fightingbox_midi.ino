@@ -1408,7 +1408,6 @@ void loop() {
           } else {
             applyStep(i); // tap -> permanent
           }
-          markStateDirty();
         }
       }
       if (pressed && !dpadTempApplied[i] &&
