@@ -4,6 +4,10 @@ Source: [this.is.NOISE inc](https://www.instagram.com/p/DaWEP56MYNI/) Instagram 
 (21.6s, "Always in key, instantly ready to play"). Kegan asked for it charted out for his
 own Fightbox synth (2026-09-16).
 
+**Status: pitch bend is merged and flashed to the board.** PR #1 merged into `master`
+2026-09-16, compiled clean, installed live on hardware the same day — the "Adding the
+bend feel" section below is playable right now, not a proposal.
+
 ## Method (v2 — corrected, 2026-09-16)
 
 Kegan flagged, correctly, that v1 (below) wasn't confidently verified and that the clip
@@ -136,6 +140,33 @@ chart on purpose.
 
 Only 1P, 2P, 4P, 1K, and 2K are used in this particular riff — 3P, 3K, and 4K aren't part
 of this melody but are there if you want to noodle around it.
+
+## Adding the bend feel (new — D-pad Left/Right, firmware merged 2026-09-16)
+
+The original recording actually slides between some of these notes rather than jumping
+cleanly — that's now playable on your Fightbox. How to use it, beginner version:
+
+1. You're already in **Scale mode / Maj Pentatonic** from the setup above. Nothing else
+   to change.
+2. **Hold down a note key first** (e.g. **1P**), then, while still holding it, tap or hold
+   **D-pad Left** to bend the pitch down, or **D-pad Right** to bend it up. It eases in
+   smoothly over about a fifth of a second rather than snapping.
+3. **Let go of D-pad Left/Right** to snap back to the note's normal pitch (still held).
+   **Let go of the note key** and the bend cancels automatically too — you can't get
+   stuck bent.
+4. If you're NOT holding a note key, D-pad Left/Right do their normal job instead
+   (nudge the whole scale up/down by a semitone) — nothing changed there.
+
+Try it on the riff itself: hold **1P** for step 10 or 11 (the longer holds near the end)
+and tap **D-pad Right** briefly partway through — that's roughly the same gesture the
+original recording is doing on its final held note.
+
+**Why D-pad and not some other button:** it was originally built on the small side
+buttons (L3/R3), but those aren't great for a bend gesture while actually playing —
+moved to the D-pad same day at Kegan's request, since Left/Right already move pitch by a
+semitone when tapped, so bend is the same axis, just continuous instead of stepped, on a
+bigger, easier-to-reach control. Full technical writeup of both the original build and
+the move is in the "Firmware modulation support" section further down this file.
 
 ---
 
