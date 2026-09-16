@@ -1371,13 +1371,14 @@ void loop() {
       // already move pitch by ±1 semitone and bend is a pitch gesture.
       bool bendCapable = (i == 2 || i == 3);
       uint8_t bendIdx = (i == 2) ? 0 : 1; // 0=down(Left) 1=up(Right)
+      if (edge) markStateDirty(); // key light on press and release, unconditional
+                                   // for every path below (bend, bend-cancel, and
+                                   // the normal semitone-shift path all shared this)
 
       if (bendCapable && edge && pressed) {
         dpadIsBend[bendIdx] = anyMelodicKeyHeld();
       }
       if (bendCapable && dpadIsBend[bendIdx]) {
-        if (edge) markStateDirty(); // key light on press and release, same
-                                     // as every other edge in this loop
         if (edge && pressed) bendStart[bendIdx] = millis();
         if (edge && !pressed) dpadIsBend[bendIdx] = false; // ramp block below
                                                              // sends the corrected
@@ -1392,12 +1393,10 @@ void loop() {
       // dpadPressStart[i] was never set for a bend press, so without this
       // guard the hold-threshold check below misreads a stale timestamp.
       if (bendCapable && dpadWasBend[bendIdx]) {
-        if (edge) markStateDirty();
         if (edge && !pressed) dpadWasBend[bendIdx] = false;
         continue;
       }
 
-      if (edge) markStateDirty();
       if (edge) {
         if (pressed) {
           dpadPressStart[i] = millis();
