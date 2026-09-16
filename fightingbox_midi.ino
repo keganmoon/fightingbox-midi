@@ -1342,36 +1342,37 @@ void loop() {
     }
   }
 
-  // Live bend ramp: eased 0->full over BEND_RAMP_MS while L3 or R3 is held
-  // as a bend. Runs every loop pass (not gated on an edge) so the ramp is
-  // smooth rather than stepped. Auto-releases if the melodic key that
-  // qualified this bend gets released first (never bend into silence).
-  // Both L3 and R3 ramps are computed independently every pass (not
-  // else-if) so holding both at once doesn't starve one of them; their
-  // signed contributions sum, so equal-duration L3+R3 cancels toward
-  // center instead of one direction silently winning.
+  // Live bend ramp + send: this block is the ONLY place that ever calls
+  // sendPitchBend for L3/R3 bends - the case-block handlers above only
+  // ever flip fnIsBend/bendStart, never send. Running unconditionally,
+  // every pass, regardless of what changed this tick, is deliberate: three
+  // earlier attempts at conditionally deciding "should this pass send"
+  // each missed a same-pass-release ordering case (bend+note released
+  // together, L3+R3 released on the same tick, etc). Always computing the
+  // true current value and letting sendPitchBend's own dedup (skip if
+  // unchanged) keep it cheap removes that whole bug class instead of
+  // patching each case as found.
   {
     bool anyMelodicHeld = false;
     for (uint8_t b = 0; b < 8; b++) if (btnState[b]) { anyMelodicHeld = true; break; }
     if (!anyMelodicHeld) {
       if (fnIsBend[0]) fnWasBend[0] = true;
       if (fnIsBend[1]) fnWasBend[1] = true;
-      if (fnIsBend[0] || fnIsBend[1]) { fnIsBend[0] = false; fnIsBend[1] = false; sendPitchBend(0); }
-    } else {
-      float combined = 0.0f;
-      if (fnIsBend[0] && fnState[0]) {
-        float t = (float)(millis() - bendStart[0]) / (float)BEND_RAMP_MS;
-        combined -= (t < 1.0f ? t : 1.0f);
-      }
-      if (fnIsBend[1] && fnState[1]) {
-        float t = (float)(millis() - bendStart[1]) / (float)BEND_RAMP_MS;
-        combined += (t < 1.0f ? t : 1.0f);
-      }
-      // Always send, even when neither is currently active: this is what
-      // zeroes the bend out on the exact pass the last-held one releases
-      // (sendPitchBend's own lastBendSent dedup makes every other pass free).
-      sendPitchBend(combined);
+      fnIsBend[0] = false; fnIsBend[1] = false;
     }
+    float combined = 0.0f;
+    if (anyMelodicHeld && fnIsBend[0] && fnState[0]) {
+      float t = (float)(millis() - bendStart[0]) / (float)BEND_RAMP_MS;
+      combined -= (t < 1.0f ? t : 1.0f);
+    }
+    if (anyMelodicHeld && fnIsBend[1] && fnState[1]) {
+      float t = (float)(millis() - bendStart[1]) / (float)BEND_RAMP_MS;
+      combined += (t < 1.0f ? t : 1.0f);
+    }
+    sendPitchBend(combined); // 0.0 whenever neither condition above held -
+                              // that's what guarantees a stuck bend is
+                              // impossible, not a special case that has to
+                              // remember to fire.
   }
 
   // ---- D-pad: pitch, chord types, or drum banks depending on mode ----
