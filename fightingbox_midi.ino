@@ -407,6 +407,7 @@ const uint8_t  PITCH_BEND_RANGE_SEMITONES = 12; // set via RPN at boot (1 octave
                                                  // off a source recording ran up to
                                                  // ~7 semitones, so this leaves room)
 bool          fnIsBend[2]   = {false, false}; // this L3/R3 press is a bend this time
+bool          fnWasBend[2]  = {false, false}; // survives auto-cancel to gate release
 unsigned long bendStart[2]  = {0, 0};
 int16_t       lastBendSent  = 0;
 
@@ -681,6 +682,13 @@ void stopButton(uint8_t idx) {
 
 void allNotesOff() {
   for (uint8_t i = 0; i < 8; i++) stopButton(i);
+  // Cancel any in-flight bend too - every caller of allNotesOff (panic,
+  // factory reset, mode switch, dropping latch) is a hard reset point, and
+  // a bend left dangling across one would resurrect on the next loop pass
+  // since the melodic key may still be physically held.
+  if (fnIsBend[0]) fnWasBend[0] = true;
+  if (fnIsBend[1]) fnWasBend[1] = true;
+  fnIsBend[0] = false; fnIsBend[1] = false;
   sendPitchBend(0); // never leave a bent note hanging across a panic/mode switch
 }
 
@@ -698,8 +706,7 @@ void sendPitchBend(float normalized) {
 
 void switchMode(Mode m) {
   if (currentMode == m) return;
-  allNotesOff();
-  fnIsBend[0] = false; fnIsBend[1] = false; // don't carry a bend across a mode switch
+  allNotesOff(); // also cancels any in-flight bend, see allNotesOff()
   // Leaving chord mode: drop momentary modifier state so a held button
   // can't stick "on" after the mode changes underneath it.
   for (uint8_t i = 0; i < NUM_CHORD_TYPES; i++) typeHeld[i] = false;
@@ -1248,6 +1255,12 @@ void loop() {
           if (edge && !pressed) { fnIsBend[0] = false; sendPitchBend(0); }
           break; // bend presses never touch the looper
         }
+        // A press that STARTED as a bend but got auto-cancelled mid-hold
+        // (melodic key let go first, or a mode switch) must not fall
+        // through into looper logic on release - fnWasBend remembers that
+        // across the auto-cancel so the stale fnPressStart[0] timestamp
+        // (never set for a bend press) can't be misread as a long hold.
+        if (edge && !pressed && fnWasBend[0]) { fnWasBend[0] = false; break; }
         if (edge) {
           if (pressed) {
             fnPressStart[i] = millis();
@@ -1276,6 +1289,7 @@ void loop() {
           if (edge && !pressed) { fnIsBend[1] = false; sendPitchBend(0); }
           break; // bend presses never touch the drum-mode toggle
         }
+        if (edge && !pressed && fnWasBend[1]) { fnWasBend[1] = false; break; }
         if (edge && pressed) {
           switchMode(drumGM() ? MELODIC_CYCLE[melodicIndex] : MODE_DRUM_GM);
         }
@@ -1317,17 +1331,28 @@ void loop() {
   // as a bend. Runs every loop pass (not gated on an edge) so the ramp is
   // smooth rather than stepped. Auto-releases if the melodic key that
   // qualified this bend gets released first (never bend into silence).
+  // Both L3 and R3 ramps are computed independently every pass (not
+  // else-if) so holding both at once doesn't starve one of them; their
+  // signed contributions sum, so equal-duration L3+R3 cancels toward
+  // center instead of one direction silently winning.
   {
     bool anyMelodicHeld = false;
     for (uint8_t b = 0; b < 8; b++) if (btnState[b]) { anyMelodicHeld = true; break; }
     if (!anyMelodicHeld) {
+      if (fnIsBend[0]) fnWasBend[0] = true;
+      if (fnIsBend[1]) fnWasBend[1] = true;
       if (fnIsBend[0] || fnIsBend[1]) { fnIsBend[0] = false; fnIsBend[1] = false; sendPitchBend(0); }
-    } else if (fnIsBend[0] && fnState[0]) {
-      float t = (float)(millis() - bendStart[0]) / (float)BEND_RAMP_MS;
-      sendPitchBend(-1.0f * (t < 1.0f ? t : 1.0f));
-    } else if (fnIsBend[1] && fnState[1]) {
-      float t = (float)(millis() - bendStart[1]) / (float)BEND_RAMP_MS;
-      sendPitchBend(1.0f * (t < 1.0f ? t : 1.0f));
+    } else {
+      float combined = 0.0f;
+      if (fnIsBend[0] && fnState[0]) {
+        float t = (float)(millis() - bendStart[0]) / (float)BEND_RAMP_MS;
+        combined -= (t < 1.0f ? t : 1.0f);
+      }
+      if (fnIsBend[1] && fnState[1]) {
+        float t = (float)(millis() - bendStart[1]) / (float)BEND_RAMP_MS;
+        combined += (t < 1.0f ? t : 1.0f);
+      }
+      if (fnIsBend[0] || fnIsBend[1]) sendPitchBend(combined);
     }
   }
 
