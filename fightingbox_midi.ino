@@ -363,7 +363,6 @@ void markStateDirty() { stateDirty = true; markSettingsDirty(); }
 bool inChordMode()   { return currentMode == MODE_CHORD; }
 bool drumGM()        { return currentMode == MODE_DRUM_GM; }
 bool inCustom()      { return currentMode == MODE_CUSTOM; }
-bool bendEligibleMode() { return currentMode == MODE_CHROMATIC || currentMode == MODE_SCALE; }
 // Must list every mode in MELODIC_CYCLE. Omitting one traps you in it:
 // Start only advances melodicIndex when this returns true, so a missing
 // mode makes switchMode() re-select the mode you are already in.
@@ -409,8 +408,9 @@ bool anyMelodicKeyHeld() {
 // press edge, so a bend can never start or stop mid-hold. With nothing
 // held, Left/Right keep doing exactly what they always did (permanent tap
 // / temporary hold semitone shift) - this adds a capability, it doesn't
-// take one away. Chord/Custom/Drum modes are untouched; bend is
-// Chromatic/Scale only (bendEligibleMode()), same as the L3/R3 version was.
+// take one away. Chord/Custom/Drum modes are untouched; bend is gated by
+// the surrounding `else if (pitchMode)` branch below (pitchMode ==
+// Chromatic/Scale), so it never applies outside those two modes.
 const unsigned long BEND_RAMP_MS = 220;         // 0 -> full bend, eased in
 const uint8_t  PITCH_BEND_RANGE_SEMITONES = 12; // set via RPN at boot (1 octave
                                                  // each way - real bends measured
@@ -1376,6 +1376,8 @@ void loop() {
         dpadIsBend[bendIdx] = anyMelodicKeyHeld();
       }
       if (bendCapable && dpadIsBend[bendIdx]) {
+        if (edge) markStateDirty(); // key light on press and release, same
+                                     // as every other edge in this loop
         if (edge && pressed) bendStart[bendIdx] = millis();
         if (edge && !pressed) dpadIsBend[bendIdx] = false; // ramp block below
                                                              // sends the corrected
@@ -1390,6 +1392,7 @@ void loop() {
       // dpadPressStart[i] was never set for a bend press, so without this
       // guard the hold-threshold check below misreads a stale timestamp.
       if (bendCapable && dpadWasBend[bendIdx]) {
+        if (edge) markStateDirty();
         if (edge && !pressed) dpadWasBend[bendIdx] = false;
         continue;
       }
