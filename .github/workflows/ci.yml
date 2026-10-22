@@ -37,5 +37,10 @@ jobs:
             "Adafruit GFX Library" \
             "Adafruit SSD1306"
 
+      - name: Stage sketch (arduino-cli requires dir name == main .ino name)
+        run: |
+          mkdir -p /tmp/sketch/fightingbox_midi
+          cp fightingbox_midi.ino /tmp/sketch/fightingbox_midi/
+
       - name: Compile sketch (RP2040 Pico, TinyUSB stack)
-        run: arduino-cli compile --fqbn rp2040:rp2040:rpipico:usbstack=tinyusb .
+        run: arduino-cli compile --fqbn rp2040:rp2040:rpipico:usbstack=tinyusb /tmp/sketch/fightingbox_midi
