@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+
+      - name: Configure board manager (RP2040 / arduino-pico)
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli core update-index
+          arduino-cli core install rp2040:rp2040
+
+      - name: Install required libraries
+        run: |
+          arduino-cli lib install \
+            "Adafruit TinyUSB Library" \
+            "MIDI Library" \
+            "Adafruit GFX Library" \
+            "Adafruit SSD1306"
+
+      - name: Compile sketch (RP2040 Pico, TinyUSB stack)
+        run: arduino-cli compile --fqbn rp2040:rp2040:rpipico:usbstack=tinyusb .
